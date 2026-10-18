@@ -378,5 +378,5 @@ See [`LICENSE`](LICENSE) for the project's license and terms.
 ---
 
 **FirstPatch AI — Understand the issue. Find the code. Plan the contribution.**
-```
+
 
