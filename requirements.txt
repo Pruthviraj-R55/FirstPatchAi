@@ -1,3 +1,7 @@
 streamlit
 pytest
 google-genai
+fastapi
+uvicorn
+python-multipart
+httpx

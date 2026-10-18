@@ -265,9 +265,15 @@
 }
 
 .chip-name {
-  max-width: 200px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-size {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
   white-space: nowrap;
 }
 
@@ -286,7 +292,56 @@
   color: #f87171;
 }
 
-/* Footer & Disabled Analyze CTA */
+/* Validation & API Error/Success Banners */
+.validation-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+  color: #fb7185;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.validation-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.api-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+  color: #fb7185;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.api-error-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.api-success-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  border-radius: var(--radius-md);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+  font-size: 0.9rem;
+}
+
+/* Footer & Analyze CTA */
 .workspace-footer {
   display: flex;
   align-items: center;
@@ -311,9 +366,33 @@
   border-radius: 50%;
   background-color: var(--accent-blue);
   box-shadow: 0 0 8px var(--accent-blue);
+  flex-shrink: 0;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
-.btn-analyze-disabled {
+.status-indicator.status-loading {
+  background-color: var(--accent-amber);
+  box-shadow: 0 0 8px var(--accent-amber);
+  animation: pulse-status 1s ease-in-out infinite;
+}
+
+.status-indicator.status-success {
+  background-color: var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
+}
+
+.status-indicator.status-error {
+  background-color: var(--accent-rose);
+  box-shadow: 0 0 8px var(--accent-rose);
+}
+
+@keyframes pulse-status {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Active Analyze Button */
+.btn-analyze {
   display: inline-flex;
   align-items: center;
   gap: 0.65rem;
@@ -322,9 +401,50 @@
   font-family: inherit;
   font-size: 0.925rem;
   font-weight: 600;
-  color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  cursor: not-allowed;
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-indigo));
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.25);
   user-select: none;
+}
+
+.btn-analyze:hover:not(:disabled) {
+  background: linear-gradient(135deg, #9d6dfa, #7b7ff7);
+  box-shadow: 0 0 24px rgba(139, 92, 246, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-analyze:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-analyze:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn-analyze.btn-analyze-loading {
+  cursor: wait;
+  opacity: 0.85;
+}
+
+/* CSS Spinner */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

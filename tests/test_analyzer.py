@@ -18,6 +18,7 @@ from firstpatch.analyzer import (
     build_analysis_prompt,
     get_analyzer_config,
     validate_analysis_response,
+    _extract_http_status_code,
 )
 
 
@@ -157,6 +158,66 @@ def test_empty_string_model_response():
         )
 
     assert "empty" in str(exc_info.value).lower()
+
+
+def test_validate_rejects_json_array():
+    """Verify that a valid JSON array (not an object) raises AnalyzerOutputError."""
+    fake_client = FakeGenAIClient(response_text='["item1", "item2"]')
+
+    with pytest.raises(AnalyzerOutputError) as exc_info:
+        analyze_issue(
+            issue_description="Bug in parser.",
+            files={"parser.py": "code"},
+            client=fake_client,
+            model="gemma-4-26b-a4b-it",
+        )
+
+    assert "dictionary object" in str(exc_info.value)
+
+
+def test_validate_rejects_json_scalar_string():
+    """Verify that a valid JSON string (not an object) raises AnalyzerOutputError."""
+    fake_client = FakeGenAIClient(response_text='"just a string"')
+
+    with pytest.raises(AnalyzerOutputError) as exc_info:
+        analyze_issue(
+            issue_description="Bug in parser.",
+            files={"parser.py": "code"},
+            client=fake_client,
+            model="gemma-4-26b-a4b-it",
+        )
+
+    assert "dictionary object" in str(exc_info.value)
+
+
+def test_validate_rejects_json_scalar_number():
+    """Verify that a valid JSON number (not an object) raises AnalyzerOutputError."""
+    fake_client = FakeGenAIClient(response_text="42")
+
+    with pytest.raises(AnalyzerOutputError) as exc_info:
+        analyze_issue(
+            issue_description="Bug in parser.",
+            files={"parser.py": "code"},
+            client=fake_client,
+            model="gemma-4-26b-a4b-it",
+        )
+
+    assert "dictionary object" in str(exc_info.value)
+
+
+def test_validate_rejects_json_scalar_boolean():
+    """Verify that a valid JSON boolean (not an object) raises AnalyzerOutputError."""
+    fake_client = FakeGenAIClient(response_text="true")
+
+    with pytest.raises(AnalyzerOutputError) as exc_info:
+        analyze_issue(
+            issue_description="Bug in parser.",
+            files={"parser.py": "code"},
+            client=fake_client,
+            model="gemma-4-26b-a4b-it",
+        )
+
+    assert "dictionary object" in str(exc_info.value)
 
 
 # 3. Missing required fields
@@ -347,7 +408,10 @@ def test_api_exception_handling():
         )
 
     assert "api request failed" in str(exc_info.value).lower()
-    assert "quota exceeded" in str(exc_info.value).lower() or "connection reset" in str(exc_info.value).lower()
+    assert "runtimeerror" in str(exc_info.value).lower()
+    # The original exception is chained (not embedded in the message) to avoid
+    # leaking SDK response bodies/headers that may contain secrets.
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 # 9. Empty issue descriptions
@@ -439,3 +503,50 @@ def test_get_analyzer_config_helper(monkeypatch: pytest.MonkeyPatch):
     key, model = get_analyzer_config()
     assert key == "valid-key-123"
     assert model == "gemma-4-26b-a4b-it"
+
+
+def test_extract_http_status_code_from_code_attribute():
+    """Verify an integer 'code' attribute is extracted as the HTTP status code."""
+    class UpstreamErr(Exception):
+        code = 429
+
+    assert _extract_http_status_code(UpstreamErr("boom")) == 429
+
+
+def test_extract_http_status_code_from_status_code_attribute():
+    """Verify an integer 'status_code' attribute is extracted."""
+    class UpstreamErr(Exception):
+        status_code = 503
+
+    assert _extract_http_status_code(UpstreamErr("boom")) == 503
+
+
+def test_extract_http_status_code_from_chained_cause():
+    """Verify a status code is extracted from a chained __cause__ exception."""
+    class Inner(Exception):
+        code = 500
+
+    inner = Inner("upstream failure")
+    outer = RuntimeError("request failed")
+    outer.__cause__ = inner
+    assert _extract_http_status_code(outer) == 500
+
+
+def test_extract_http_status_code_returns_none_when_missing():
+    """Verify None is returned when no integer status code attribute exists."""
+    class Plain(Exception):
+        pass
+
+    assert _extract_http_status_code(Plain("boom")) is None
+
+
+def test_extract_http_status_code_ignores_bool_and_nonint():
+    """Verify boolean or non-integer attributes are not treated as status codes."""
+    class Weird(Exception):
+        code = True
+
+    class StrCode(Exception):
+        code = "429"
+
+    assert _extract_http_status_code(Weird("x")) is None
+    assert _extract_http_status_code(StrCode("x")) is None

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { Workspace } from './components/Workspace';
@@ -6,8 +6,11 @@ import { IllustrativeResults } from './components/IllustrativeResults';
 import { HowItWorks } from './components/HowItWorks';
 import { Features } from './components/Features';
 import { Footer } from './components/Footer';
+import type { AnalysisResult } from './types/api';
 
 export const App: React.FC = () => {
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+
   return (
     <div className="app-container">
       {/* Background Grid Pattern */}
@@ -18,8 +21,8 @@ export const App: React.FC = () => {
         <Navbar />
         <main>
           <Hero />
-          <Workspace />
-          <IllustrativeResults />
+          <Workspace onAnalysisComplete={setAnalysisResult} />
+          <IllustrativeResults result={analysisResult} />
           <HowItWorks />
           <Features />
         </main>

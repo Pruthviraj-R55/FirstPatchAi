@@ -1,3 +1,4 @@
+
 """Gemma issue analyzer module for FirstPatch AI.
 
 Constructs prompts with untrusted-data boundaries, communicates with Google Gen AI
@@ -9,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Mapping
+import time
+from typing import Any, Iterable, Mapping
 
 
 class AnalyzerError(Exception):
@@ -252,6 +254,31 @@ def create_genai_client(api_key: str) -> Any:
     return genai.Client(api_key=api_key)
 
 
+def _extract_http_status_code(exc: BaseException) -> int | None:
+    """Safely extract an HTTP status code from an upstream exception.
+
+    Inspects common integer attributes (code, status_code, status) on the
+    exception and its chained causes. Never touches response bodies or
+    headers, which may contain API keys or other secrets.
+
+    Args:
+        exc: The exception raised by the upstream AI SDK.
+
+    Returns:
+        The HTTP status code as an integer, or None when none is available.
+    """
+    for attr in ("code", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    for linked in (getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if linked is not None:
+            found = _extract_http_status_code(linked)
+            if found is not None:
+                return found
+    return None
+
+
 def analyze_issue(
     issue_description: str,
     files: Mapping[str, str] | None = None,
@@ -314,25 +341,78 @@ def analyze_issue(
     try:
         from google.genai import types
 
-        config = types.GenerateContentConfig(response_mime_type="application/json")
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "issue_summary": types.Schema(type=types.Type.STRING),
+                    "relevant_files": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "filename": types.Schema(type=types.Type.STRING),
+                                "reason": types.Schema(type=types.Type.STRING),
+                            },
+                            required=["filename", "reason"],
+                        ),
+                    ),
+                    "contribution_plan": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                    "suggested_tests": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                    "uncertainties": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                },
+                required=[
+                    "issue_summary",
+                    "relevant_files",
+                    "contribution_plan",
+                    "suggested_tests",
+                    "uncertainties",
+                ],
+            ),
+        )
     except Exception:
         config = None
 
-    try:
-        if config is not None:
-            response = resolved_client.models.generate_content(
-                model=resolved_model,
-                contents=prompt,
-                config=config,
-            )
-        else:
-            response = resolved_client.models.generate_content(
-                model=resolved_model,
-                contents=prompt,
-            )
-    except Exception as exc:
-        # Do not fabricate a fallback AI response on failure
-        raise AnalyzerAPIError(f"AI API request failed: {exc}") from exc
+    response = None
+    for attempt in range(3):
+        try:
+            if config is not None:
+                response = resolved_client.models.generate_content(
+                    model=resolved_model, contents=prompt, config=config
+                )
+            else:
+                response = resolved_client.models.generate_content(
+                    model=resolved_model, contents=prompt
+                )
+            break
+        except Exception as exc:
+            status_code = _extract_http_status_code(exc)
+            transient = any(t in str(exc) for t in ("500", "503", "INTERNAL", "UNAVAILABLE"))
+            if not transient or attempt == 2:
+                # Log only safe diagnostic details (status code + exception type).
+                # The raw exception may carry response bodies/headers with secrets,
+                # so it is deliberately excluded from the error message.
+                if status_code is not None:
+                    raise AnalyzerAPIError(
+                        f"Upstream AI API request failed with HTTP status {status_code}: "
+                        f"{type(exc).__name__}"
+                    ) from exc
+                raise AnalyzerAPIError(
+                    f"Upstream AI API request failed: {type(exc).__name__}"
+                ) from exc
+            time.sleep(2 * (attempt + 1))
+
+
 
     raw_output = getattr(response, "text", "")
     return validate_analysis_response(
