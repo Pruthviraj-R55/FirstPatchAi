@@ -8,6 +8,34 @@ By analyzing an issue description alongside user-supplied repository files, Firs
 
 The project includes a Streamlit application for interactive analysis and offline demonstration, alongside a React + TypeScript frontend backed by a FastAPI REST API.
 
+
+## Screenshots
+
+### 1. Application Interface
+
+![FirstPatch AI application interface](images/0-interface.png)
+
+### 2. Analysis in Progress
+
+![FirstPatch AI analysis in progress](images/2-working.png)
+
+### 3. Analysis Workspace
+
+![FirstPatch AI workspace](images/3-workspace.png)
+
+### 4. File Upload
+
+![FirstPatch AI file upload](images/4-file-upload.png)
+
+### 5. Contribution Plan
+
+![FirstPatch AI contribution plan](images/5-contributation_plan.png)
+
+### 6. Suggested Tests
+
+![FirstPatch AI suggested tests](images/6-tests.png)
+
+
 ## What It Does
 
 ### Capabilities
