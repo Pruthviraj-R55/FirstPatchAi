@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import '../styles/Navbar.css';
 
-type AppPage = 'home' | 'analyze' | 'results';
+type AppPage = 'home' | 'analyze' | 'results' | 'learn';
 
 interface NavbarProps {
   page: AppPage;
@@ -46,8 +46,15 @@ export const Navbar: React.FC<NavbarProps> = ({ page, hasResult, onNavigate }) =
       { href: '/#features', label: 'Capabilities' },
     ] : []),
     { href: '/analyze', label: 'Understand code' },
+    { href: '/learn', label: 'Learn' },
     ...(hasResult ? [{ href: '/results', label: 'Results' }] : []),
   ];
+
+  const isCurrentLink = (href: string) =>
+    (href === '/' && page === 'home') ||
+    (href === '/analyze' && page === 'analyze') ||
+    (href === '/learn' && page === 'learn') ||
+    (href === '/results' && page === 'results');
 
   return (
     <header className={`navbar-header ${scrolled ? 'scrolled' : ''}`}>
@@ -64,7 +71,7 @@ export const Navbar: React.FC<NavbarProps> = ({ page, hasResult, onNavigate }) =
 
         <nav className="navbar-nav" aria-label="Main navigation">
           {links.map((link) => (
-            <a key={link.href} className={`nav-link${(link.href === '/' && page === 'home') || (link.href === '/analyze' && page === 'analyze') || (link.href === '/results' && page === 'results') ? ' is-active' : ''}`} href={link.href} aria-current={(link.href === '/' && page === 'home') || (link.href === '/analyze' && page === 'analyze') || (link.href === '/results' && page === 'results') ? 'page' : undefined} onClick={(event) => follow(event, link.href)}>
+            <a key={link.href} className={`nav-link${isCurrentLink(link.href) ? ' is-active' : ''}`} href={link.href} aria-current={isCurrentLink(link.href) ? 'page' : undefined} onClick={(event) => follow(event, link.href)}>
               {link.label}
             </a>
           ))}

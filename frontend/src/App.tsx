@@ -6,13 +6,15 @@ import { IllustrativeResults } from './components/IllustrativeResults';
 import { HowItWorks } from './components/HowItWorks';
 import { Features } from './components/Features';
 import { Footer } from './components/Footer';
+import { LearningHub } from './components/LearningHub';
 import type { AnalysisResult } from './types/api';
 
-type AppPage = 'home' | 'analyze' | 'results';
+type AppPage = 'home' | 'analyze' | 'results' | 'learn';
 
 function pageForPath(pathname: string): AppPage {
   if (pathname === '/analyze') return 'analyze';
   if (pathname === '/results') return 'results';
+  if (pathname === '/learn') return 'learn';
   return 'home';
 }
 
@@ -137,6 +139,10 @@ export const App: React.FC = () => {
               </div>
             </div>
             <IllustrativeResults key={analysisVersion} result={analysisResult} />
+          </section>
+
+          <section className="page-view learn-route" hidden={page !== 'learn'} aria-label="Learning Hub">
+            <LearningHub onNavigate={navigate} />
           </section>
         </main>
         <Footer onNavigate={navigate} />

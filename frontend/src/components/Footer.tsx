@@ -36,6 +36,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               <li><a href="/#how-it-works" onClick={(event) => follow(event, '/#how-it-works')}>How it works</a></li>
               <li><a href="/#features" onClick={(event) => follow(event, '/#features')}>Capabilities</a></li>
               <li><a href="/analyze" onClick={(event) => follow(event, '/analyze')}>Understand code</a></li>
+              <li><a href="/learn" onClick={(event) => follow(event, '/learn')}>Learn Git & GitHub</a></li>
             </ul>
           </div>
 
