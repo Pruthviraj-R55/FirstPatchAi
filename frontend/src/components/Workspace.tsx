@@ -1,18 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { AnalysisResult } from '../types/api';
+import type { AnalysisResult, UploadLimits } from '../types/api';
 import '../styles/Workspace.css';
 
 // Supported extensions must match what the backend file processor accepts
-const SUPPORTED_EXTENSIONS = new Set([
-  '.py', '.js', '.ts', '.java', '.c', '.cpp',
-  '.md', '.txt', '.json', '.yml', '.yaml', '.toml',
-]);
-const MAX_COMBINED_BYTES = 204_800; // 200 KB, mirroring the backend limit
-const MAX_FILE_COUNT = 20; // Keep the client limit aligned with the backend.
 // Same-origin by default so a single production deployment needs no CORS setup.
 // Set VITE_API_BASE_URL only when the API is hosted on a separate origin.
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 const API_ENDPOINT = `${API_BASE_URL}/api/analyze`;
+const CONFIG_ENDPOINT = `${API_BASE_URL}/api/config`;
 const configuredTimeout = Number(import.meta.env.VITE_ANALYSIS_REQUEST_TIMEOUT_MS);
 const ANALYSIS_TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0
   ? configuredTimeout
@@ -34,9 +29,16 @@ function getExtension(filename: string): string {
   return filename.slice(lastDot).toLowerCase();
 }
 
-function validateFiles(files: File[]): string | null {
-  if (files.length > MAX_FILE_COUNT) {
-    return `Choose no more than ${MAX_FILE_COUNT} files per analysis.`;
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+function validateFiles(files: File[], limits: UploadLimits | null): string | null {
+  if (!limits) return 'Loading upload requirements…';
+  if (files.length > limits.max_files) {
+    return `Choose no more than ${limits.max_files} files per analysis.`;
   }
   const seen = new Set<string>();
   let totalBytes = 0;
@@ -50,8 +52,8 @@ function validateFiles(files: File[]): string | null {
 
     // Extension check
     const ext = getExtension(file.name);
-    if (!SUPPORTED_EXTENSIONS.has(ext)) {
-      return `Unsupported file type: "${file.name}". Supported extensions: ${[...SUPPORTED_EXTENSIONS].join(', ')}.`;
+    if (!limits.allowed_extensions.includes(ext.slice(1))) {
+      return `“${file.name}” is not a supported text source file. Accepted extensions: ${limits.allowed_extensions.map((item) => `.${item}`).join(', ')}.`;
     }
 
     // Empty file check
@@ -59,11 +61,19 @@ function validateFiles(files: File[]): string | null {
       return `"${file.name}" is empty. Empty files cannot be analyzed.`;
     }
 
+    if (file.size > limits.max_file_size_bytes) {
+      return `“${file.name}” is ${formatBytes(file.size)}; the individual file limit is ${formatBytes(limits.max_file_size_bytes)}.`;
+    }
+
     // Combined size check
     totalBytes += file.size;
-    if (totalBytes > MAX_COMBINED_BYTES) {
-      return `Combined file size (${(totalBytes / 1024).toFixed(1)} KB) exceeds the 200 KB limit.`;
+    if (totalBytes > limits.max_combined_upload_size_bytes) {
+      return `Selected files total ${formatBytes(totalBytes)}, exceeding the ${formatBytes(limits.max_combined_upload_size_bytes)} upload limit.`;
     }
+  }
+
+  if (totalBytes > limits.max_analysis_source_bytes) {
+    return `Selected files total ${formatBytes(totalBytes)}. The configured model context budget is ${formatBytes(limits.max_analysis_source_bytes)} of source text; remove files or choose a smaller subset. Files are never truncated.`;
   }
 
   return null;
@@ -81,6 +91,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
   const [retryAllowed, setRetryAllowed] = useState(false);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [clientValidationError, setClientValidationError] = useState('');
+  const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
+  const [limitsError, setLimitsError] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestInFlightRef = useRef(false);
@@ -93,6 +105,25 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
       mountedRef.current = false;
       abortControllerRef.current?.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(CONFIG_ENDPOINT, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Upload requirements are unavailable.');
+        const config = await response.json() as UploadLimits;
+        if (!Number.isInteger(config.max_files) || !Number.isInteger(config.max_file_size_bytes)
+          || !Number.isInteger(config.max_combined_upload_size_bytes) || !Number.isInteger(config.max_analysis_source_bytes)
+          || !Number.isInteger(config.max_issue_description_bytes) || !Array.isArray(config.allowed_extensions)) throw new Error('Upload requirements are invalid.');
+        setUploadLimits(config);
+        setLimitsError('');
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setLimitsError(error instanceof Error ? error.message : 'Upload requirements are unavailable. Refresh and try again.');
+      });
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -120,7 +151,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
       const existingNames = new Set(prev.map(f => f.name));
       const deduped = incoming.filter(f => !existingNames.has(f.name));
       const merged = [...prev, ...deduped];
-      const err = validateFiles(merged);
+      const err = validateFiles(merged, uploadLimits);
       setClientValidationError(err ?? '');
       return merged;
     });
@@ -130,7 +161,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
     clearErrorOnEdit();
     setSelectedFiles(prev => {
       const next = prev.filter(f => f.name !== fileName);
-      const err = validateFiles(next);
+      const err = validateFiles(next, uploadLimits);
       setClientValidationError(err ?? '');
       return next;
     });
@@ -249,7 +280,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
           // ignore JSON parse failure
         }
 
-        if (response.status === 400) {
+        if (response.status === 413) {
+          setErrorMessage(detail);
+          setRetryAllowed(false);
+        } else if (response.status === 400) {
           setErrorMessage(`Validation error: ${detail}`);
           setRetryAllowed(false);
         } else if (response.status === 503) {
@@ -310,8 +344,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
   // ---- Derived state ----
 
   const isLoading = requestState === 'loading';
+  const selectedTotalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+  const issueDescriptionBytes = new TextEncoder().encode(issueText.trim()).length;
+  const issueDescriptionError = uploadLimits && issueDescriptionBytes > uploadLimits.max_issue_description_bytes
+    ? `Issue description is ${formatBytes(issueDescriptionBytes)}; the limit is ${formatBytes(uploadLimits.max_issue_description_bytes)}. Shorten it to continue.`
+    : '';
+  const acceptedExtensions = uploadLimits?.allowed_extensions.map((extension) => `.${extension}`).join(', ') ?? '';
   const canAnalyze = !isLoading
+    && Boolean(uploadLimits)
     && !clientValidationError
+    && !issueDescriptionError
     && selectedFiles.length > 0
     && (requestState !== 'error' || retryAllowed)
     && !(retryAfterSeconds !== null && retryAfterSeconds > 0);
@@ -338,7 +380,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
         </details>
 
         {/* Workspace Panel */}
-        <div className="workspace-card">
+        <div className={`workspace-card${isLoading ? ' workspace-card-loading' : ''}`}>
           {/* Toolbar */}
           <div className="workspace-toolbar">
             <div className="toolbar-title">
@@ -375,18 +417,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 <label className="input-label" htmlFor="file-input">
                   Source files <span className="label-optional">(Required)</span>
                 </label>
-                <span className="file-constraints">Up to {MAX_FILE_COUNT} files · 200 KB combined</span>
+                <span className="file-constraints">{uploadLimits ? `Up to ${uploadLimits.max_files} files · ${formatBytes(uploadLimits.max_file_size_bytes)} each · ${formatBytes(uploadLimits.max_combined_upload_size_bytes)} total` : 'Loading upload limits…'}</span>
               </div>
               <p id="file-upload-help" className="form-help">
                 Upload the source files you want explained. You can start even when you do not know what problem to look for. Add an issue description only if you want to focus the investigation. Uploaded code is never executed.
               </p>
 
               <div
-                className={`dropzone-container ${isDragging ? 'dragging' : ''}`}
+                className={`dropzone-container ${isDragging ? 'dragging' : ''}${limitsError ? ' is-unavailable' : ''}`}
                 onClick={() => {
-                  if (!isLoading) fileInputRef.current?.click();
+                  if (!isLoading && uploadLimits && !limitsError) fileInputRef.current?.click();
                 }}
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragOver={(e) => { e.preventDefault(); if (uploadLimits && !limitsError) setIsDragging(true); }}
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={handleFileDrop}
                 role="button"
@@ -394,7 +436,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 aria-label="Upload source files — click or drag and drop"
                 aria-describedby={clientValidationError ? 'file-upload-help file-validation-error' : 'file-upload-help'}
                 onKeyDown={(e) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && !isLoading) {
+                  if ((e.key === 'Enter' || e.key === ' ') && !isLoading && uploadLimits && !limitsError) {
                     e.preventDefault();
                     fileInputRef.current?.click();
                   }
@@ -407,9 +449,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                   className="hidden-file-input"
                   multiple
                   onChange={handleFileSelect}
-                  accept=".py,.js,.ts,.java,.c,.cpp,.md,.txt,.json,.yml,.yaml,.toml"
+                  accept={acceptedExtensions}
                   aria-describedby={clientValidationError ? 'file-upload-help file-validation-error' : 'file-upload-help'}
-                  disabled={isLoading}
+                  disabled={isLoading || !uploadLimits || Boolean(limitsError)}
                   // Stop the click from bubbling back up to the container (avoids double open)
                   onClick={(e) => e.stopPropagation()}
                 />
@@ -428,11 +470,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                     <span className="file-browse-link">Browse files</span>
                     {' '}or drag &amp; drop code files here
                   </span>
-                  <span className="dropzone-secondary">
-                  20 files maximum · 200 KB combined · .py, .js, .ts, .java, .c, .cpp, .md, .txt, .json, .yml, .yaml, .toml
-                  </span>
+                  <span className="dropzone-secondary">{uploadLimits
+                    ? `${uploadLimits.max_files} files max · ${formatBytes(uploadLimits.max_file_size_bytes)} per file · ${formatBytes(uploadLimits.max_combined_upload_size_bytes)} total · ${acceptedExtensions}`
+                    : 'Retrieving current server upload requirements…'}</span>
                 </div>
               </div>
+
+              {limitsError && <div className="validation-error" role="alert">{limitsError} File upload is paused until the server requirements load.</div>}
+
+              {uploadLimits && <div className="upload-usage" role="status" aria-live="polite">
+                <span><strong>{selectedFiles.length}</strong> / {uploadLimits.max_files} files selected</span>
+                <span><strong>{formatBytes(selectedTotalBytes)}</strong> / {formatBytes(uploadLimits.max_combined_upload_size_bytes)} upload total</span>
+                <span className={selectedTotalBytes > uploadLimits.max_analysis_source_bytes ? 'upload-usage-warning' : ''}><strong>{formatBytes(selectedTotalBytes)}</strong> / {formatBytes(uploadLimits.max_analysis_source_bytes)} model context budget</span>
+              </div>}
 
               {/* File chips */}
               {selectedFiles.length > 0 && (
@@ -445,7 +495,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                       </svg>
                       <span className="chip-name">{file.name}</span>
                       <span className="chip-size">
-                        ({(file.size / 1024).toFixed(1)} KB)
+                        ({formatBytes(file.size)})
                       </span>
                       <button
                         type="button"
@@ -478,7 +528,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 <label htmlFor="issue-description" className="input-label">
                   Describe a problem <span className="label-optional">(Optional)</span>
                 </label>
-                <span className="character-count">{issueText.length} characters</span>
+                <span className="character-count">{formatBytes(issueDescriptionBytes)} / {formatBytes(uploadLimits?.max_issue_description_bytes ?? 0)}</span>
               </div>
               <p id="issue-description-help" className="form-help">
                 Have a specific issue? Add what you expected, what happened, and how to reproduce it. You can leave this blank to understand the uploaded code.
@@ -496,6 +546,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 }}
                 disabled={isLoading}
               />
+              {issueDescriptionError && <div className="validation-error" role="alert">{issueDescriptionError}</div>}
             </div>
 
             {/* API Error Banner */}
@@ -521,6 +572,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
 
             {/* Action Bar */}
             <div className="workspace-footer">
+              {isLoading && <div className="analysis-loading-track" role="progressbar" aria-label="Analysis request in progress"><span /></div>}
               <div className="footer-status">
                 <span
                   className={`status-indicator ${isLoading ? 'status-loading' : requestState === 'success' ? 'status-success' : requestState === 'error' ? 'status-error' : ''}`}

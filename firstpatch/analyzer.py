@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Iterable, Mapping
 
 import httpx
+from firstpatch.files import MAX_ANALYSIS_SOURCE_BYTES, MAX_ISSUE_DESCRIPTION_BYTES
 
 logger = logging.getLogger("firstpatch.analyzer")
 
@@ -514,9 +515,19 @@ def analyze_issue(
 
     files_mapping = dict(files) if files else {}
     issue_description = issue_description.strip() if issue_description else ""
+    if len(issue_description.encode("utf-8")) > MAX_ISSUE_DESCRIPTION_BYTES:
+        raise AnalyzerValidationError(
+            f"Issue description exceeds the {MAX_ISSUE_DESCRIPTION_BYTES:,}-byte limit. Shorten it and retry."
+        )
     if not files_mapping:
         raise AnalyzerValidationError(
             "Upload at least one source file. An issue description is optional."
+        )
+    source_bytes = sum(len(content.encode("utf-8")) for content in files_mapping.values())
+    if source_bytes > MAX_ANALYSIS_SOURCE_BYTES:
+        raise AnalyzerValidationError(
+            f"Uploaded source totals {source_bytes:,} bytes, exceeding the configured model context budget "
+            f"of {MAX_ANALYSIS_SOURCE_BYTES:,} source bytes. Files are never truncated; choose a smaller subset."
         )
 
     if client is None:

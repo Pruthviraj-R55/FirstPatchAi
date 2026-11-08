@@ -2,7 +2,9 @@ import streamlit as st
 
 from firstpatch.analyzer import AnalyzerError, analyze_issue
 from firstpatch.files import (
+    MAX_ANALYSIS_SOURCE_BYTES,
     MAX_COMBINED_SIZE_BYTES,
+    MAX_FILE_SIZE_BYTES,
     MAX_FILE_COUNT,
     FileValidationError,
     process_uploaded_files,
@@ -81,7 +83,9 @@ st.markdown("---")
 st.subheader("1. Source Files")
 st.write(
     f"Upload the files you want explained. You do not need to know what is wrong first. "
-    f"Up to {MAX_FILE_COUNT} files and {MAX_COMBINED_SIZE_BYTES // 1024} KB combined. "
+    f"Up to {MAX_FILE_COUNT} files, {MAX_FILE_SIZE_BYTES // (1024 * 1024)} MiB per file, "
+    f"and {MAX_COMBINED_SIZE_BYTES // (1024 * 1024)} MiB combined. The model context accepts up to "
+    f"{MAX_ANALYSIS_SOURCE_BYTES // 1024} KiB of source text per analysis. "
     "Analysis is limited to these files. At least one file is required."
 )
 
@@ -120,6 +124,12 @@ if st.button("Understand Selected Code", type="primary"):
                         f"Choose no more than {MAX_FILE_COUNT} files per analysis."
                     )
                 files_map = process_uploaded_files(uploaded_files)
+                source_bytes = sum(len(content.encode("utf-8")) for content in files_map.values())
+                if source_bytes > MAX_ANALYSIS_SOURCE_BYTES:
+                    raise FileValidationError(
+                        f"Selected files total {source_bytes:,} bytes, exceeding the model context budget of "
+                        f"{MAX_ANALYSIS_SOURCE_BYTES:,} source bytes. Files are never truncated; choose a smaller subset."
+                    )
 
                 with st.spinner("Explaining selected files and checking for potential problems..."):
                     analysis = analyze_issue(

@@ -9,6 +9,7 @@ import pytest
 
 from firstpatch.files import (
     ALLOWED_EXTENSIONS,
+    MAX_FILE_SIZE_BYTES,
     MAX_COMBINED_SIZE_BYTES,
     FileValidationError,
     decode_file_bytes,
@@ -171,8 +172,8 @@ def test_invalid_utf8_content():
 
 # 5. Combined uploads below the size limit
 def test_combined_uploads_below_size_limit():
-    """Verify multiple files under the 200 KB limit process successfully."""
-    # 50 KB + 50 KB = 100 KB (well below 204,800 bytes)
+    """Verify multiple files under the combined limit process successfully."""
+    # 50 KiB + 50 KiB = 100 KiB.
     chunk = "a" * (50 * 1024)
     files = [
         FakeUploadedFile("file1.txt", chunk),
@@ -185,42 +186,46 @@ def test_combined_uploads_below_size_limit():
     assert len(result["file2.txt"]) == 50 * 1024
 
 
-def test_exact_limit_boundary():
-    """Verify that an upload with combined size exactly equal to 204,800 bytes succeeds."""
-    exact_content = b"x" * MAX_COMBINED_SIZE_BYTES
-    files = [FakeUploadedFile("boundary.txt", exact_content)]
+def test_exact_combined_limit_boundary():
+    """Verify a 5 MiB combined upload succeeds when each file stays below its per-file cap."""
+    chunk_size = MAX_FILE_SIZE_BYTES
+    file_count, remainder = divmod(MAX_COMBINED_SIZE_BYTES, chunk_size)
+    files = [FakeUploadedFile(f"boundary_{index}.txt", b"x" * chunk_size) for index in range(file_count)]
+    if remainder:
+        files.append(FakeUploadedFile("boundary_tail.txt", b"x" * remainder))
 
     result = process_uploaded_files(files)
-    assert "boundary.txt" in result
-    assert len(result["boundary.txt"]) == MAX_COMBINED_SIZE_BYTES
+    assert sum(len(content.encode("utf-8")) for content in result.values()) == MAX_COMBINED_SIZE_BYTES
 
 
-# 6. Combined uploads exceeding 200 KB
+# 6. Uploads exceeding individual or combined limits
 def test_single_file_exceeding_size_limit():
-    """Verify that a single file exceeding 204,800 bytes is rejected."""
-    oversized_content = b"x" * (MAX_COMBINED_SIZE_BYTES + 1)
+    """Verify a file over the 1 MiB individual cap is rejected."""
+    oversized_content = b"x" * (MAX_FILE_SIZE_BYTES + 1)
     files = [FakeUploadedFile("oversized.py", oversized_content)]
 
     with pytest.raises(FileValidationError) as exc_info:
         process_uploaded_files(files)
 
     assert "exceeds" in str(exc_info.value).lower()
-    assert "200 kb" in str(exc_info.value).lower()
+    assert "individual file limit" in str(exc_info.value).lower()
 
 
 def test_combined_multiple_files_exceeding_size_limit():
-    """Verify that multiple files whose sum exceeds 204,800 bytes are rejected."""
-    # 110 KB + 110 KB = 220 KB (> 200 KB)
-    chunk = b"x" * (110 * 1024)
-    files = [
-        FakeUploadedFile("part1.py", chunk),
-        FakeUploadedFile("part2.py", chunk),
-    ]
+    """Verify multiple individually valid files exceeding the combined 5 MiB cap are rejected."""
+    chunk = b"x" * MAX_FILE_SIZE_BYTES
+    files = [FakeUploadedFile(f"part{index}.txt", chunk) for index in range(1, 7)]
 
     with pytest.raises(FileValidationError) as exc_info:
         process_uploaded_files(files)
 
     assert "exceeds" in str(exc_info.value).lower()
+
+
+def test_file_count_limit_is_enforced_by_shared_processor():
+    files = [FakeUploadedFile(f"module_{index}.txt", b"x") for index in range(21)]
+    with pytest.raises(FileValidationError, match="20 files"):
+        process_uploaded_files(files)
 
 
 # 7. Duplicate filenames

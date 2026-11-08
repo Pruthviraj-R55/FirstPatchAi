@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from firstpatch.analyzer import (
@@ -29,8 +29,12 @@ from firstpatch.analyzer import (
     analyze_issue,
 )
 from firstpatch.files import (
+    MAX_ANALYSIS_SOURCE_BYTES,
     MAX_COMBINED_SIZE_BYTES,
+    MAX_FILE_SIZE_BYTES,
+    MAX_ISSUE_DESCRIPTION_BYTES,
     MAX_FILE_COUNT,
+    ALLOWED_EXTENSIONS_DISPLAY,
     FileValidationError,
     process_uploaded_files,
 )
@@ -43,6 +47,61 @@ app = FastAPI(
     description="Selected-file code understanding and optional issue investigation using OpenRouter.",
     version="1.0.0",
 )
+
+MAX_REQUEST_BODY_BYTES = MAX_COMBINED_SIZE_BYTES + 1_048_576  # Allow bounded multipart and issue-field overhead.
+
+
+class RequestBodyTooLarge(Exception):
+    """Internal signal used to stop parsing an oversized multipart request."""
+
+
+class MultipartBodyLimitMiddleware:
+    """Bound request bytes before FastAPI/Starlette parses multipart uploads."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/analyze":
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Analysis request exceeds the {MAX_REQUEST_BODY_BYTES:,}-byte request-body safety limit."},
+                    )
+                    await response(scope, receive, send)
+                    return
+            except ValueError:
+                pass
+
+        received = 0
+
+        async def bounded_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_REQUEST_BODY_BYTES:
+                    raise RequestBodyTooLarge()
+            return message
+
+        try:
+            await self.app(scope, bounded_receive, send)
+        except RequestBodyTooLarge:
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": f"Analysis request exceeds the {MAX_REQUEST_BODY_BYTES:,}-byte request-body safety limit."},
+            )
+            await response(scope, receive, send)
+
+
+app.add_middleware(MultipartBodyLimitMiddleware)
 
 # In the default single-origin deployment the frontend and API share an origin,
 # so the browser does not need CORS. For split hosting, set CORS_ORIGINS to a
@@ -104,6 +163,19 @@ async def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "FirstPatch AI API"}
 
 
+@app.get("/api/config")
+async def public_config() -> dict[str, Any]:
+    """Expose non-secret upload and analysis constraints for frontend validation."""
+    return {
+        "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
+        "max_combined_upload_size_bytes": MAX_COMBINED_SIZE_BYTES,
+        "max_analysis_source_bytes": MAX_ANALYSIS_SOURCE_BYTES,
+        "max_issue_description_bytes": MAX_ISSUE_DESCRIPTION_BYTES,
+        "max_files": MAX_FILE_COUNT,
+        "allowed_extensions": sorted(ext.lstrip(".") for ext in ALLOWED_EXTENSIONS_DISPLAY.split(", ")),
+    }
+
+
 @app.post("/api/analyze")
 async def analyze_endpoint(
     issue_description: str = Form(default=""),
@@ -128,6 +200,11 @@ async def analyze_endpoint(
         - missing_context
     """
     cleaned_issue = issue_description.strip()
+    if len(cleaned_issue.encode("utf-8")) > MAX_ISSUE_DESCRIPTION_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Issue description exceeds the {MAX_ISSUE_DESCRIPTION_BYTES:,}-byte limit. Shorten the description and retry.",
+        )
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,20 +221,27 @@ async def analyze_endpoint(
 
     try:
         try:
-            # Bounded streaming read: halt immediately if cumulative upload size exceeds 200 KB
+            # Bounded streaming read: reject each file and the request total before joining or decoding.
             for upload in files:
                 filename = upload.filename or "unnamed_file"
                 file_chunks: list[bytes] = []
+                file_bytes = 0
 
                 while True:
                     chunk = await upload.read(CHUNK_SIZE)
                     if not chunk:
                         break
+                    file_bytes += len(chunk)
                     cumulative_bytes += len(chunk)
+                    if file_bytes > MAX_FILE_SIZE_BYTES:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail=f"File '{filename}' exceeds the individual file limit of {MAX_FILE_SIZE_BYTES:,} bytes ({MAX_FILE_SIZE_BYTES // 1024} KiB).",
+                        )
                     if cumulative_bytes > MAX_COMBINED_SIZE_BYTES:
-                        raise FileValidationError(
-                            f"Combined upload size ({cumulative_bytes:,} bytes) exceeds "
-                            f"the maximum allowed limit of {MAX_COMBINED_SIZE_BYTES:,} bytes (200 KB)."
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail=f"Combined upload exceeds the {MAX_COMBINED_SIZE_BYTES:,}-byte limit ({MAX_COMBINED_SIZE_BYTES // (1024 * 1024)} MiB).",
                         )
                     file_chunks.append(chunk)
 
@@ -179,6 +263,16 @@ async def analyze_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File validation error: {fve}",
         ) from fve
+
+    source_bytes = sum(len(content.encode("utf-8")) for content in files_map.values())
+    if source_bytes > MAX_ANALYSIS_SOURCE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"The selected files total {source_bytes:,} bytes, which exceeds the current model analysis context budget "
+                f"of {MAX_ANALYSIS_SOURCE_BYTES:,} source bytes. Files are never truncated; remove files or choose a smaller subset."
+            ),
+        )
 
     # Log request metadata only (never log file contents or secrets)
     request_id = uuid.uuid4().hex

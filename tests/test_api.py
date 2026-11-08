@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 import api
 from api import app
-from firstpatch.files import MAX_FILE_COUNT
+from firstpatch.files import MAX_ANALYSIS_SOURCE_BYTES, MAX_COMBINED_SIZE_BYTES, MAX_FILE_COUNT, MAX_FILE_SIZE_BYTES, MAX_ISSUE_DESCRIPTION_BYTES
 from firstpatch.analyzer import (
     AnalyzerAPIError,
     AnalyzerConfigurationError,
@@ -257,20 +257,59 @@ def test_duplicate_filenames_rejected(monkeypatch: pytest.MonkeyPatch):
     assert "duplicate filename" in response.json()["detail"].lower()
 
 
-# 8. Combined uploads exceeding 200 KB are rejected
-def test_combined_uploads_exceeding_200kb_rejected(monkeypatch: pytest.MonkeyPatch):
-    """Verify that uploads exceeding the 200 KB limit return 400 Bad Request."""
-    monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
+# 8. Upload size and model context limits return controlled responses
+def test_individual_file_over_limit_returns_413_without_analysis(monkeypatch: pytest.MonkeyPatch):
+    def should_not_run(*args: Any, **kwargs: Any):
+        raise AssertionError("Analyzer must not run for an oversized file")
+    monkeypatch.setattr(api, "analyze_issue", should_not_run)
+    response = post_analysis(files=[("files", ("large.txt", b"a" * (MAX_FILE_SIZE_BYTES + 1), "text/plain"))])
+    assert response.status_code == 413
+    assert "large.txt" in response.json()["detail"]
+    assert "individual file limit" in response.json()["detail"].lower()
 
-    # 204,801 bytes (1 byte over 200 KB)
-    oversized = b"a" * 204_801
 
-    response = post_analysis(data={"issue_description": "Bug report with oversized file."},
-        files=[("files", ("large.txt", oversized, "text/plain"))],
+def test_combined_upload_over_limit_returns_413_without_analysis(monkeypatch: pytest.MonkeyPatch):
+    def should_not_run(*args: Any, **kwargs: Any):
+        raise AssertionError("Analyzer must not run for an oversized combined upload")
+    monkeypatch.setattr(api, "analyze_issue", should_not_run)
+    payload = [("files", (f"file{index}.txt", b"x" * MAX_FILE_SIZE_BYTES, "text/plain")) for index in range(1, 6)]
+    payload.append(("files", ("overflow.txt", b"x", "text/plain")))
+    response = post_analysis(files=payload)
+    assert response.status_code == 413
+    assert "combined upload" in response.json()["detail"].lower()
+
+
+def test_model_context_budget_is_enforced_without_truncation(monkeypatch: pytest.MonkeyPatch):
+    def should_not_run(*args: Any, **kwargs: Any):
+        raise AssertionError("Analyzer must not run above the source context budget")
+    monkeypatch.setattr(api, "analyze_issue", should_not_run)
+    response = post_analysis(files=[("files", ("large.txt", b"x" * (MAX_ANALYSIS_SOURCE_BYTES + 1), "text/plain"))])
+    assert response.status_code == 413
+    assert "context budget" in response.json()["detail"].lower()
+    assert "never truncated" in response.json()["detail"].lower()
+
+
+def test_public_config_matches_server_upload_limits():
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    assert response.json() == {
+        "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
+        "max_combined_upload_size_bytes": MAX_COMBINED_SIZE_BYTES,
+        "max_analysis_source_bytes": MAX_ANALYSIS_SOURCE_BYTES,
+        "max_issue_description_bytes": MAX_ISSUE_DESCRIPTION_BYTES,
+        "max_files": MAX_FILE_COUNT,
+        "allowed_extensions": sorted(["py", "js", "ts", "java", "c", "cpp", "md", "txt", "json", "yml", "yaml", "toml"]),
+    }
+
+
+def test_oversized_issue_description_is_rejected_before_file_processing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(api, "process_uploaded_files", lambda *_: (_ for _ in ()).throw(AssertionError("file parsing should not run")))
+    response = post_analysis(
+        data={"issue_description": "x" * (MAX_ISSUE_DESCRIPTION_BYTES + 1)},
+        files=[("files", ("small.py", b"x", "text/x-python"))],
     )
-    assert response.status_code == 400
-    assert "exceeds" in response.json()["detail"].lower()
-    assert "200 kb" in response.json()["detail"].lower()
+    assert response.status_code == 413
+    assert "issue description" in response.json()["detail"].lower()
 
 
 # 9. Analyzer configuration errors return a safe error response

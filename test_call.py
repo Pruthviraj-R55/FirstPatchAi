@@ -1,14 +1,29 @@
-import os, time
-from google import genai
+"""One-request live OpenRouter smoke check for FirstPatch AI.
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-models = [os.environ["GEMINI_MODEL"], "gemma-4-31b-it", "gemini-2.5-flash"]
-for model in models:
-    for attempt in range(1, 4):
-        try:
-            r = client.models.generate_content(model=model, contents='Reply with the JSON {"ok": true}')
-            print(model, "OK:", r.text)
-            break
-        except Exception as e:
-            print(model, "attempt", attempt, "FAILED:", type(e).__name__, str(e)[:120])
-            time.sleep(3)
+Run directly with: python test_call.py
+The API key is read by the backend analyzer from OPENROUTER_API_KEY and is never printed.
+This script makes one free-model request and is not part of the automated test suite.
+"""
+
+if __name__ == "__main__":
+    import sys
+
+    from firstpatch.analyzer import AnalyzerError, analyze_issue
+
+    try:
+        result = analyze_issue(
+            issue_description="",
+            files={"smoke_example.py": "def add(left, right):\n    return left + right\n"},
+        )
+    except AnalyzerError as exc:
+        print(f"OpenRouter smoke check failed: {exc}")
+        sys.exit(1)
+
+    required_fields = {
+        "issue_summary", "relevant_files", "contribution_plan", "suggested_tests", "uncertainties"
+    }
+    missing = required_fields.difference(result)
+    if missing:
+        print("OpenRouter returned an incomplete analysis response.")
+        sys.exit(1)
+    print("OpenRouter smoke check succeeded; all five analysis fields are present.")

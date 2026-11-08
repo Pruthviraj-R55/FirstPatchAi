@@ -41,3 +41,12 @@ export interface PotentialIssue {
 export interface ApiErrorDetail {
   detail: string;
 }
+
+export interface UploadLimits {
+  max_file_size_bytes: number;
+  max_combined_upload_size_bytes: number;
+  max_analysis_source_bytes: number;
+  max_issue_description_bytes: number;
+  max_files: number;
+  allowed_extensions: string[];
+}

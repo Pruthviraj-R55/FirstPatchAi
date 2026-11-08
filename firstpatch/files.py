@@ -6,12 +6,30 @@ in-memory without disk writes or code execution.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
-# Maximum total upload size in bytes (200 KB = 200 * 1024)
-MAX_COMBINED_SIZE_BYTES: int = 204_800
-MAX_FILE_COUNT: int = 20
+def _positive_limit(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer number of bytes/files.") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer number of bytes/files.")
+    return value
+
+
+MAX_FILE_SIZE_BYTES: int = _positive_limit("MAX_FILE_SIZE_BYTES", 1_048_576)
+MAX_COMBINED_SIZE_BYTES: int = _positive_limit("MAX_COMBINED_SIZE_BYTES", 5_242_880)
+MAX_ANALYSIS_SOURCE_BYTES: int = _positive_limit("MAX_ANALYSIS_SOURCE_BYTES", 786_432)
+MAX_ISSUE_DESCRIPTION_BYTES: int = _positive_limit("MAX_ISSUE_DESCRIPTION_BYTES", 16_384)
+MAX_FILE_COUNT: int = _positive_limit("MAX_FILE_COUNT", 20)
+if MAX_FILE_SIZE_BYTES > MAX_COMBINED_SIZE_BYTES:
+    raise RuntimeError("MAX_FILE_SIZE_BYTES cannot exceed MAX_COMBINED_SIZE_BYTES.")
+if MAX_ANALYSIS_SOURCE_BYTES > MAX_COMBINED_SIZE_BYTES:
+    raise RuntimeError("MAX_ANALYSIS_SOURCE_BYTES cannot exceed MAX_COMBINED_SIZE_BYTES.")
 
 # Allowed file extensions for issue context
 ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
@@ -174,7 +192,7 @@ def process_uploaded_files(files: Iterable[Any] | None) -> dict[str, str]:
     2. Validates filenames and extensions BEFORE reading content.
     3. Detects duplicate filenames to prevent silent overwrites.
     4. Reads raw bytes into memory and rejects empty (0-byte) files.
-    5. Calculates combined upload size from actual bytes and enforces the 200 KB limit.
+    5. Enforces individual and combined size limits using actual bytes.
     6. Safely decodes UTF-8 text without executing any code.
 
     Args:
@@ -203,6 +221,10 @@ def process_uploaded_files(files: Iterable[Any] | None) -> dict[str, str]:
 
     if not file_list:
         return {}
+    if len(file_list) > MAX_FILE_COUNT:
+        raise FileValidationError(
+            f"Choose no more than {MAX_FILE_COUNT} files per analysis."
+        )
 
     # Stage 1: Validate file objects, filenames, duplicate detection, and extensions BEFORE reading bytes
     validated_files: list[tuple[str, Any]] = []
@@ -238,11 +260,18 @@ def process_uploaded_files(files: Iterable[Any] | None) -> dict[str, str]:
                 f"File '{filename}' is empty (0 bytes). Empty files cannot be processed."
             )
 
+        if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
+            raise FileValidationError(
+                f"File '{filename}' is {len(raw_bytes):,} bytes and exceeds the individual file limit of "
+                f"{MAX_FILE_SIZE_BYTES:,} bytes ({MAX_FILE_SIZE_BYTES // 1024} KiB)."
+            )
+
         total_bytes += len(raw_bytes)
         if total_bytes > MAX_COMBINED_SIZE_BYTES:
             raise FileValidationError(
                 f"Combined upload size ({total_bytes:,} bytes) exceeds "
-                f"the maximum limit of {MAX_COMBINED_SIZE_BYTES:,} bytes (200 KB)."
+                f"the maximum combined limit of {MAX_COMBINED_SIZE_BYTES:,} bytes "
+                f"({MAX_COMBINED_SIZE_BYTES // (1024 * 1024)} MiB)."
             )
 
         # Safely decode UTF-8 without executing code
