@@ -1,7 +1,12 @@
 import streamlit as st
 
 from firstpatch.analyzer import AnalyzerError, analyze_issue
-from firstpatch.files import FileValidationError, process_uploaded_files
+from firstpatch.files import (
+    MAX_COMBINED_SIZE_BYTES,
+    MAX_FILE_COUNT,
+    FileValidationError,
+    process_uploaded_files,
+)
 
 # Fixed offline demo sample data referencing username_validator.py
 SAMPLE_DEMO_ANALYSIS = {
@@ -50,8 +55,8 @@ st.set_page_config(
 # Header and introductory text
 st.title("🛠️ FirstPatch AI")
 st.write(
-    "Welcome to FirstPatch AI! This tool helps beginners understand open-source issues, "
-    "explore relevant codebase context, and prepare their first contributions with confidence."
+    "Understand unfamiliar code, discover potential problems, and find a starting point. "
+    "Upload selected source files with or without an issue description. Files are analyzed as text and never executed."
 )
 
 st.markdown("---")
@@ -73,45 +78,50 @@ if demo_mode:
 st.markdown("---")
 
 # Main Input Section
-st.subheader("1. GitHub Issue Description")
-issue_description = st.text_area(
-    label="Paste the issue description, bug report, or feature request here:",
-    placeholder="Example: Fix TypeError when parsing null configuration values in config_loader...",
-    height=200
+st.subheader("1. Source Files")
+st.write(
+    f"Upload the files you want explained. You do not need to know what is wrong first. "
+    f"Up to {MAX_FILE_COUNT} files and {MAX_COMBINED_SIZE_BYTES // 1024} KB combined. "
+    "Analysis is limited to these files. At least one file is required."
 )
 
-st.subheader("2. Codebase Files")
-st.write("Upload the relevant repository or code files to provide context for the issue:")
-
 uploaded_files = st.file_uploader(
-    label="Choose repository files",
+    label="Choose source files",
     type=["py", "js", "ts", "java", "c", "cpp", "md", "txt", "json", "yml", "yaml", "toml"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
 )
 
 if uploaded_files:
     st.info(f"📁 {len(uploaded_files)} file(s) selected for analysis.")
 
+st.subheader("2. Additional Issue Context (Optional)")
+issue_description = st.text_area(
+    label="Describe a problem (optional):",
+    placeholder="Optional: what happened, what did you expect, and how can it be reproduced?",
+    height=160,
+)
+
 st.markdown("---")
 
 # Action Section
-if st.button("Analyze Issue", type="primary"):
+if st.button("Understand Selected Code", type="primary"):
     cleaned_issue = issue_description.strip()
-    if not cleaned_issue:
-        st.warning("Please provide a GitHub issue description before analyzing.")
+    if not demo_mode and not uploaded_files:
+        st.warning("Upload at least one source file to begin analysis. The issue description is optional.")
     else:
         try:
             if demo_mode:
                 # Fixed offline sample workflow: no API calls, no credential requirements
                 analysis = SAMPLE_DEMO_ANALYSIS
             else:
-                # Live model workflow: validate files in-memory and call Gemma model
+                # Live model workflow: validate files in-memory and call configured free provider model
+                if len(uploaded_files or []) > MAX_FILE_COUNT:
+                    raise FileValidationError(
+                        f"Choose no more than {MAX_FILE_COUNT} files per analysis."
+                    )
                 files_map = process_uploaded_files(uploaded_files)
 
-                if not files_map:
-                    st.info("ℹ️ No codebase files uploaded. Performing issue-only analysis.")
-
-                with st.spinner("Analyzing issue and codebase context with Gemma..."):
+                with st.spinner("Explaining selected files and checking for potential problems..."):
                     analysis = analyze_issue(
                         issue_description=cleaned_issue,
                         files=files_map,
@@ -129,8 +139,36 @@ if st.button("Analyze Issue", type="primary"):
                     "This is a fixed offline demonstration referencing `username_validator.py`."
                 )
 
-            # 1. Issue Summary
-            st.markdown("#### 📋 Issue Summary")
+            if analysis.get("project_overview"):
+                st.markdown("#### Project Understanding · Selected Files")
+                st.write(analysis["project_overview"])
+
+            file_explanations = analysis.get("file_explanations", [])
+            if file_explanations:
+                st.markdown("#### File Explanations")
+                for explanation in file_explanations:
+                    with st.expander(explanation["filename"], expanded=True):
+                        st.write(explanation["purpose"])
+                        if explanation["important_elements"]:
+                            st.markdown("**Important functions, classes, or logic**")
+                            for element in explanation["important_elements"]:
+                                st.markdown(f"- {element}")
+                        st.markdown(f"**Relationship:** {explanation['relationships']}")
+
+            potential_issues = analysis.get("potential_issues", [])
+            st.markdown("#### Potential Problems to Inspect")
+            if potential_issues:
+                for finding in potential_issues:
+                    label = "Observed behavior" if finding["assessment"] == "observed" else "Inferred risk"
+                    filename = f" · `{finding['filename']}`" if finding["filename"] else ""
+                    st.markdown(f"**{label}{filename} · {finding['location']} — {finding['title']}**")
+                    st.write(f"Evidence: {finding['evidence']}")
+                    st.write(f"Why it matters: {finding['why_it_matters']}")
+            else:
+                st.write("No specific potential problem was identified in the supplied files. This does not prove the code is defect-free.")
+
+            # 1. Summary: issue-focused when supplied, code-focused otherwise
+            st.markdown("#### 📋 Analysis Summary")
             st.write(analysis.get("issue_summary", ""))
 
             # 2. Relevant Files
@@ -170,6 +208,14 @@ if st.button("Analyze Issue", type="primary"):
                     st.markdown(f"- {item}")
             else:
                 st.write("No uncertainties noted.")
+
+            missing_context = analysis.get("missing_context", [])
+            st.markdown("#### Context That Could Clarify the Analysis")
+            if missing_context:
+                for item in missing_context:
+                    st.markdown(f"- {item}")
+            else:
+                st.write("No additional context was requested. Verify findings against the rest of the repository and its runtime behavior.")
 
         except FileValidationError as fve:
             st.error(f"File validation error: {fve}")

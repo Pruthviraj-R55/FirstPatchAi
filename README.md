@@ -2,9 +2,9 @@
 
 **An AI-powered open-source contribution onboarding assistant for beginners.**
 
-FirstPatch AI helps developers understand open-source issues, identify relevant codebase context, and plan their first contributions with confidence.
+FirstPatch AI helps developers understand unfamiliar code, discover potential problems, and find a starting point for a contribution.
 
-By analyzing an issue description alongside user-supplied repository files, FirstPatch AI generates a structured contribution roadmap containing an issue summary, relevant files, actionable implementation steps, suggested tests, and important uncertainties or assumptions.
+Users can upload selected source files without writing an issue description. FirstPatch AI explains what the supplied files appear to do, identifies evidence-backed potential problems, and offers beginner-friendly steps and suggested tests. An optional issue description focuses the analysis on a reported symptom. Results are limited to uploaded files and are advisory; uploaded code is never executed.
 
 The project includes a Streamlit application for interactive analysis and offline demonstration, alongside a React + TypeScript frontend backed by a FastAPI REST API.
 
@@ -40,12 +40,14 @@ The project includes a Streamlit application for interactive analysis and offlin
 
 ### Capabilities
 
-- **Issue Analysis:** Explains problem statements and bug reports in beginner-friendly language.
+- **Code Understanding:** Explains the apparent purpose of selected files, important functions/classes, and visible relationships between supplied files.
+- **Potential Problem Discovery:** Highlights suspicious behavior and inferred risks with evidence, impact, and explicit uncertainty.
+- **Optional Issue Investigation:** Connects an optional issue description to the uploaded code; states when the selected files are insufficient.
 - **Relevant File Identification:** Identifies potentially relevant files from user-supplied source code and explains their relevance.
 - **Actionable Contribution Planning:** Breaks a problem into manageable implementation steps.
 - **Test Suggestions:** Recommends unit tests, edge cases, and expected behaviors to verify.
 - **Uncertainty Reporting:** Highlights assumptions, missing context, and questions that may require further investigation.
-- **Structured AI Responses:** Uses JSON output configuration and strict application-level validation to maintain a consistent five-section response.
+- **Structured AI Responses:** Preserves five contribution fields and adds a project overview, file explanations, potential issues, and missing context, all validated by the backend.
 - **Prompt Injection Awareness:** Treats issue descriptions and uploaded file contents as untrusted input, with instructions designed to reduce the risk of following malicious embedded directions.
 - **Safe In-Memory File Processing:** Validates and decodes supported text files in memory without executing uploaded code or writing uploaded contents to disk.
 - **Offline Demo Mode:** Provides a fixed sample analysis without API credentials or network access.
@@ -54,11 +56,11 @@ The project includes a Streamlit application for interactive analysis and offlin
 ### Current Limitations
 
 - **Read-Only and Advisory:** FirstPatch AI does not implement fixes, execute uploaded code, run the analyzed repository's tests, or create pull requests automatically.
-- **User-Supplied Context:** Relevant-file identification is limited to the files provided; the application does not automatically inspect an entire GitHub repository.
-- **Upload Constraints:** Supports 12 text file extensions and a maximum combined upload size of 200 KB (204,800 bytes).
-- **Model Dependent:** Live analysis requires a valid Google Gen AI API key and a supported model identifier.
+- **User-Supplied Context:** Analysis is limited to files the user provides; the application does not inspect an entire repository.
+- **Upload Constraints:** Supports 12 text file extensions, up to 20 files, and a maximum combined upload size of 200 KB (204,800 bytes).
+- **Model Dependent:** Live analysis requires an OpenRouter API key and an explicitly free model identifier ending in `:free`.
 - **Output Validation:** Responses that do not meet the required schema are rejected rather than silently converted into valid-looking results.
-- **Local Development:** The documented setup runs the application locally; a public cloud deployment is not provided by this guide.
+- **Deployment:** A Docker image serves the built React app and FastAPI API from one origin. A hosting provider and its credentials are not bundled with the project.
 
 ## File Upload Constraints
 
@@ -85,37 +87,43 @@ The Streamlit application includes a **Demo mode (offline sample)** option.
 - Clearly distinguishes sample output from live model-generated results.
 - Does not analyze arbitrary uploaded files while using the fixed sample demonstration.
 
-Demo mode is useful for exploring the interface without consuming model API quota.
+Demo mode is useful for exploring the interface without consuming free-model request quota.
 
 ### 2. Live AI Analysis
 
-With demo mode disabled, the application uses the official `google-genai` SDK to request analysis from the configured Google AI model.
+With demo mode disabled, the backend sends one non-streaming request to OpenRouter's chat completions API. The default configuration uses `nvidia/nemotron-3-ultra-550b-a55b:free`; no paid model fallback is configured.
 
-- Accepts an issue description and optional uploaded source files.
-- Supports issue-only analysis when no files are supplied, where permitted by the interface.
-- Uses structured-output configuration to request a JSON object matching the expected response schema.
+- Requires one or more uploaded source files. An issue description is optional and focuses the analysis when provided.
+- Requests JSON in the prompt, then parses and validates the returned content on the backend; it does not rely on provider-enforced JSON mode.
 - Validates the model response before returning the analysis.
 - Reports errors when the upstream request fails or the returned content does not satisfy the expected format.
+- Does not automatically retry provider requests, avoiding repeated free-quota consumption.
 
 AI-generated suggestions are advisory and should be reviewed before implementation.
 
 ### 3. React + FastAPI Workspace
 
-The React frontend provides a workspace for submitting issues, uploading files, and viewing the generated analysis.
+The React frontend provides a workspace for uploading files, optionally describing an issue, and reviewing the generated analysis.
 
 The FastAPI backend handles request validation, invokes the analyzer, and returns structured results to the frontend.
 
+For local development, Vite proxies `/api` to `API_PROXY_TARGET` (default `http://127.0.0.1:8000`). The frontend itself uses the same-origin `/api` route; production serves the UI and API together by default.
+
 ## Analysis Response Structure
 
-A successful analysis contains five sections:
+A successful analysis preserves five contribution fields and adds structured code-understanding fields:
 
 | Field | Description |
 |---|---|
-| `issue_summary` | A concise explanation of the reported issue |
+| `issue_summary` | A concise explanation of the supplied issue, or a summary of uploaded code and investigation findings when no issue is reported |
 | `relevant_files` | Candidate filenames and reasons they may be relevant |
 | `contribution_plan` | Actionable steps for investigating and addressing the issue |
 | `suggested_tests` | Recommended tests and edge cases |
 | `uncertainties` | Assumptions, missing context, and unresolved questions |
+| `project_overview` | What the supplied files appear to do together, within the uploaded-file scope |
+| `file_explanations` | Per-file purpose, important elements, and visible relationships |
+| `potential_issues` | Evidence-backed observed behavior or inferred risks, with file/location when available |
+| `missing_context` | Additional information that could clarify an inference |
 
 The application validates the response structure and field types. A successful HTTP response from the model provider does not, by itself, guarantee a valid application-level result.
 
@@ -124,8 +132,8 @@ The application validates the response structure and field types. A successful H
 | Component | Technology |
 |---|---|
 | Language | Python |
-| AI integration | Google Gen AI SDK (`google-genai`) |
-| AI model | Configurable through `GEMINI_MODEL` |
+| AI integration | OpenRouter chat completions API over HTTPS |
+| AI model | Configurable through `OPENROUTER_MODEL`; must end in `:free` |
 | Backend | FastAPI, Uvicorn |
 | Frontend | React, TypeScript, Vite |
 | Alternative interface | Streamlit |
@@ -140,7 +148,7 @@ Install the following:
 - Python 3.10 or newer, compatible with the project's dependencies
 - Node.js and npm (for the React frontend)
 - Windows PowerShell
-- A Google AI Studio API key for live analysis
+- An OpenRouter API key for live analysis
 
 Git is recommended for version control.
 
@@ -168,16 +176,16 @@ If PowerShell restricts script activation, you can run the virtual environment's
 
 ### 3. Configure Environment Variables
 
-Live model analysis requires `GEMINI_API_KEY` and `GEMINI_MODEL` in the PowerShell session that runs the backend or Streamlit application.
+Live model analysis requires `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in the PowerShell session that runs the backend or Streamlit application.
 
 #### A. Set the API Key Securely
 
-Create or obtain an API key through [Google AI Studio](https://aistudio.google.com/apikey).
+Create or obtain a key through [OpenRouter API Keys](https://openrouter.ai/keys).
 
 Enter the following command:
 
 ```powershell
-$key = Read-Host "Enter Gemini API key" -AsSecureString
+$key = Read-Host "Enter OpenRouter API key" -AsSecureString
 ```
 
 When prompted, paste the key and press Enter. The characters should remain hidden.
@@ -185,26 +193,26 @@ When prompted, paste the key and press Enter. The characters should remain hidde
 Then assign the key to the environment variable:
 
 ```powershell
-$env:GEMINI_API_KEY = [System.Net.NetworkCredential]::new("", $key).Password
+$env:OPENROUTER_API_KEY = [System.Net.NetworkCredential]::new("", $key).Password
 Remove-Variable key
 ```
 
 The key is held in the current PowerShell session's environment; these commands do not write it to a project file.
 
-#### B. Set the Model Identifier
+#### B. Set the Free Model Identifier
 
 ```powershell
-$env:GEMINI_MODEL = "gemma-4-26b-a4b-it"
+$env:OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 ```
 
-This model identifier has been tested during development. Availability and supported structured-output features may vary by provider and model.
+The backend rejects model identifiers that do not end in `:free`; it does not select or fall back to paid models. Free model availability and account limits are controlled by OpenRouter and the model provider.
 
 #### C. Verify the Configuration
 
 Check the key without displaying it:
 
 ```powershell
-if ($env:GEMINI_API_KEY) {
+if ($env:OPENROUTER_API_KEY) {
     "API key is set"
 } else {
     "API key is missing"
@@ -214,7 +222,7 @@ if ($env:GEMINI_API_KEY) {
 Check the configured model:
 
 ```powershell
-$env:GEMINI_MODEL
+$env:OPENROUTER_MODEL
 ```
 
 These environment variables are specific to the current terminal session. Configure them separately in any new terminal that runs live analysis.
@@ -291,18 +299,66 @@ The Streamlit demo mode can be used without configuring an API key.
 
 Checks whether the FastAPI service is responding.
 
-### Analyze an Issue
+### Analyze Uploaded Files
 
 `POST /api/analyze`
 
 Accepts multipart form data containing:
 
-- `issue_description` — the issue description to analyze.
-- `files` — optional uploaded source files, subject to the application's validation rules.
+- `files` — one or more uploaded source files, subject to the application's validation rules. At least one file is required.
+- `issue_description` — optional issue description used to prioritize the investigation.
 
-A successful response contains the five analysis fields documented above.
+A successful response contains the five contribution fields and four additive code-understanding fields documented above. Potential findings are not verified bugs; suggested tests are not executed.
 
 For the exact request schema, response structure, and available API documentation, visit `http://localhost:8000/docs` while the backend is running.
+
+## Production Deployment with Docker
+
+The included Dockerfile builds the React frontend and packages it with FastAPI. The single service serves the UI, API, and health endpoint on the same port, so browser CORS is not needed for the default deployment.
+
+1. In PowerShell, enter the key without echoing it and set the explicitly free model in the current session:
+
+   ```powershell
+   $secureOpenRouterKey = Read-Host "Enter OpenRouter API key" -AsSecureString
+   $openRouterCredential = [System.Net.NetworkCredential]::new("", $secureOpenRouterKey)
+   $env:OPENROUTER_API_KEY = $openRouterCredential.Password
+   $env:OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+   Remove-Variable secureOpenRouterKey, openRouterCredential
+   ```
+
+   The key stays out of the image build and command text. Run the container from this same PowerShell session.
+2. Build the image from the project root:
+
+   ```powershell
+   docker build -t firstpatch-ai:local .
+   ```
+
+3. Run it locally:
+
+   ```powershell
+   docker run -d --name firstpatch-ai --restart unless-stopped -p 127.0.0.1:8000:8000 -e OPENROUTER_API_KEY -e OPENROUTER_MODEL firstpatch-ai:local
+   ```
+
+4. Open `http://localhost:8000/`. Check `http://localhost:8000/api/health`; Docker also runs this endpoint as its container health check.
+
+Stop the local container with `docker stop firstpatch-ai`; remove it afterward with `docker rm firstpatch-ai` if desired. Clear the key from the PowerShell session with `$env:OPENROUTER_API_KEY = $null` when finished.
+
+For a container hosting provider, build from this repository's root `Dockerfile`, provide `OPENROUTER_API_KEY` as a server-side secret and `OPENROUTER_MODEL` as a server-side environment variable, and route public traffic to the container port (the image honors `PORT`, defaulting to `8000`). Do not set provider credentials as `VITE_*` variables or bake them into the frontend build. If hosting the frontend separately, build it with `VITE_API_BASE_URL` set to the backend origin and configure the backend's `CORS_ORIGINS` as a comma-separated list of exact frontend origins. Avoid wildcard origins.
+
+### Production environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | For live analysis | OpenRouter key, configured on the backend only |
+| `OPENROUTER_MODEL` | For live analysis | OpenRouter model ID; the backend requires the ID to end in `:free` |
+| `OPENROUTER_REQUEST_TIMEOUT_SECONDS` | No | Per-request OpenRouter HTTP timeout in seconds; defaults to `30`. Requests are not automatically retried. |
+| `ANALYSIS_REQUEST_TIMEOUT_SECONDS` | No | Overall FastAPI analysis deadline in seconds; defaults to `100` and should exceed the upstream timeout. |
+| `PORT` | No | HTTP port supplied by the hosting platform; defaults to `8000` |
+| `CORS_ORIGINS` | No | Exact comma-separated browser origins for split frontend/backend hosting; blank for same-origin |
+| `VITE_API_BASE_URL` | No | Frontend build-time backend origin for split hosting; omit for same-origin |
+| `VITE_ANALYSIS_REQUEST_TIMEOUT_MS` | No | Browser request safety deadline in milliseconds; defaults to `105000`, slightly longer than the backend deadline |
+
+The container serves the Vite app at `/`, the API at `/api/*`, and the readiness endpoint at `/api/health`. FastAPI's interactive API documentation is available at `/docs`.
 
 ## Running Automated Tests
 
@@ -351,7 +407,7 @@ FirstPatchAi/
 
 - `api.py` — FastAPI application and REST endpoints.
 - `app.py` — Streamlit interface and offline demonstration.
-- `firstpatch/analyzer.py` — prompt construction, Google Gen AI integration, and structured response validation.
+- `firstpatch/analyzer.py` — prompt construction, OpenRouter integration, and structured response validation.
 - `firstpatch/files.py` — in-memory file validation and decoding.
 - `frontend/` — React and TypeScript workspace.
 - `samples/` — example source files.

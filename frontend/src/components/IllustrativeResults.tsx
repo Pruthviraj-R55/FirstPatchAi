@@ -1,41 +1,8 @@
-import React, { useState } from 'react';
+import React from 'react';
 import type { AnalysisResult } from '../types/api';
+import { ContributionReadiness } from './ContributionReadiness';
+import { GuidedContribution } from './GuidedContribution';
 import '../styles/IllustrativeResults.css';
-
-// ─── Static illustrative sample (used only when no live result is available) ───
-
-const SAMPLE: AnalysisResult = {
-  issue_summary:
-    'The validate_username function in username_validator.py only checks that the username is not None ' +
-    '(raising a ValueError). It completely lacks validation for non-string types, empty or ' +
-    'whitespace-only strings, length limits, and disallowed characters.',
-  relevant_files: [
-    {
-      filename: 'username_validator.py',
-      reason:
-        'Contains the validate_username function where input validation logic and exception handling must be enhanced.',
-    },
-  ],
-  contribution_plan: [
-    'Review project requirements to confirm username length limits and accepted character rules.',
-    'Add type checking to verify username is an instance of str.',
-    'Reject empty strings and whitespace-only inputs.',
-    'Enforce length boundaries (e.g., 3 to 30 characters).',
-    'Validate allowed characters (e.g., alphanumeric, underscores, hyphens).',
-    'Update the test suite to verify valid inputs and cover all rejected edge cases.',
-  ],
-  suggested_tests: [
-    'Null handling: Test validate_username(None) raises ValueError.',
-    'Type guard: Test non-string inputs (integers, lists, booleans) raise TypeError or ValueError.',
-    "Empty string: Test empty string '' and whitespace-only '   ' are rejected.",
-    'Boundary limits: Test usernames under the minimum length (e.g., 1-2 characters) and over maximum length.',
-    'Happy path: Test valid usernames containing permitted characters return True.',
-  ],
-  uncertainties: [
-    'Exact minimum and maximum username lengths are not defined in the issue description.',
-    'Unclear whether usernames should be normalized (e.g., converted to lowercase).',
-  ],
-};
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -47,10 +14,31 @@ interface IllustrativeResultsProps {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result }) => {
-  const [activeTab, setActiveTab] = useState<'all' | 'plan' | 'tests'>('all');
+  if (!result) {
+    return (
+      <section id="illustrative-preview" className="results-section" aria-labelledby="preview-heading">
+        <div className="section-container">
+          <div className="section-header results-heading">
+            <div className="section-badge">Analysis results</div>
+            <h2 id="preview-heading" className="section-title">Analysis results</h2>
+            <p className="section-description">Code explanations, potential problems, and contribution guidance will appear here after analysis.</p>
+          </div>
+          <div className="results-empty-state" role="status">
+            <div className="empty-state-mark" aria-hidden="true">//</div>
+            <div>
+              <h3>Your results will appear here</h3>
+              <p>Upload selected source files to understand unfamiliar code. Add an optional issue description to focus the investigation.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
-  const isLive = result !== null;
-  const data: AnalysisResult = isLive ? result : SAMPLE;
+  const data: AnalysisResult = result;
+  const fileExplanations = data.file_explanations ?? [];
+  const potentialIssues = data.potential_issues ?? [];
+  const missingContext = data.missing_context ?? [];
 
   return (
     <section
@@ -59,92 +47,113 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
       aria-labelledby="preview-heading"
     >
       <div className="section-container">
-        {/* Section Header — title changes based on mode */}
+        {/* Section Header */}
         <div className="section-header">
-          <div className={`section-badge ${isLive ? '' : 'badge-warning'}`}>
-            {isLive ? (
-              <>
-                <span className="badge-live-dot"></span>
-                <span>Live Analysis Result</span>
-              </>
-            ) : (
-              <>
-                <span className="badge-warning-dot"></span>
-                <span>Static Demonstration Only</span>
-              </>
-            )}
-          </div>
+          <div className="section-badge"><span className="badge-live-dot"></span>Live analysis</div>
           <h2 id="preview-heading" className="section-title">
-            {isLive ? 'Structured Contribution Plan' : 'Structured Contribution Plan (Preview)'}
+            Analysis results
           </h2>
           <p className="section-description">
-            {isLive
-              ? 'The 5-field structured roadmap generated by the FirstPatch AI backend for your issue.'
-              : 'Here is an example of the 5-field structured roadmap generated for an open-source issue.'}
+            Review the analysis, confirm assumptions against the repository, and adapt the suggested steps before you contribute.
           </p>
         </div>
 
-        {/* Mode-aware banner */}
-        {isLive ? (
-          <div className="live-result-banner" role="status">
-            <div className="live-banner-icon">✅</div>
-            <div className="disclaimer-body">
-              <strong>Live analysis — generated by the AI model.</strong>
-              <span>
-                The cards below display the actual response returned by the FirstPatch AI backend for your issue.
-                AI-generated output may be incomplete or incorrect; verify suggestions before submitting a contribution.
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="disclaimer-banner" role="alert">
-            <div className="disclaimer-icon">⚠️</div>
-            <div className="disclaimer-body">
-              <strong>Illustrative preview — not generated by the AI.</strong>
-              <span>
-                The cards below display a fixed, verified example based on <code>username_validator.py</code>.
-                They demonstrate how FirstPatch AI structures onboarding advice when connected to the backend analyzer.
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Filter Tabs */}
-        <div className="preview-filter-bar">
-          <span className="filter-label">Filter View:</span>
-          <div className="filter-pills" role="tablist">
-            <button
-              className={`pill-btn ${activeTab === 'all' ? 'active' : ''}`}
-              onClick={() => setActiveTab('all')}
-              role="tab"
-              aria-selected={activeTab === 'all'}
-            >
-              All 5 Roadmap Fields
-            </button>
-            <button
-              className={`pill-btn ${activeTab === 'plan' ? 'active' : ''}`}
-              onClick={() => setActiveTab('plan')}
-              role="tab"
-              aria-selected={activeTab === 'plan'}
-            >
-              Contribution Plan Only
-            </button>
-            <button
-              className={`pill-btn ${activeTab === 'tests' ? 'active' : ''}`}
-              onClick={() => setActiveTab('tests')}
-              role="tab"
-              aria-selected={activeTab === 'tests'}
-            >
-              Suggested Tests Only
-            </button>
+        <div className="live-result-banner" role="note">
+          <div className="disclaimer-body">
+            <strong>AI-generated guidance</strong>
+            <span>Suggestions may be incomplete or incorrect. Verify file paths and behavior in the repository before you contribute.</span>
           </div>
         </div>
 
-        {/* 5 Cards Grid */}
+        {data.project_overview && (
+          <section className="result-card investigation-overview" aria-labelledby="project-overview-heading">
+            <div className="card-header">
+              <div className="card-tag tag-violet"><span>Project understanding</span></div>
+              <span className="field-type">Selected files only</span>
+            </div>
+            <div className="card-body">
+              <h3 id="project-overview-heading">What this code appears to do</h3>
+              <p className="summary-text">{data.project_overview}</p>
+              <p className="scope-note">This explanation is based only on the files you uploaded. It does not represent a full-repository analysis.</p>
+            </div>
+          </section>
+        )}
+
+        <section className="result-card file-explanations-card" aria-labelledby="file-explanations-heading">
+          <div className="card-header">
+            <div className="card-tag tag-blue"><span>File explanations</span></div>
+            <span className="field-type">{fileExplanations.length} file{fileExplanations.length === 1 ? '' : 's'} explained</span>
+          </div>
+          <div className="card-body">
+            <h3 id="file-explanations-heading">Understand the supplied files</h3>
+            {fileExplanations.length ? (
+              <div className="explanation-list">
+                {fileExplanations.map((file) => (
+                  <article className="explanation-item" key={file.filename}>
+                    <h4><code>{file.filename}</code></h4>
+                    <p>{file.purpose}</p>
+                    {file.important_elements.length > 0 && (
+                      <div className="important-elements">
+                        <strong>Important functions, classes, or logic</strong>
+                        <ul>{file.important_elements.map((item, index) => <li key={`${file.filename}-${index}`}>{item}</li>)}</ul>
+                      </div>
+                    )}
+                    <p className="relationship-note"><strong>Relationship:</strong> {file.relationships}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-state">File-specific explanations were not returned. Review the supplied code directly and use the overview as limited context.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="result-card potential-issues-card" aria-labelledby="potential-issues-heading">
+          <div className="card-header">
+            <div className="card-tag tag-amber"><span>Potential problem discovery</span></div>
+            <span className="field-type">Evidence-led · no confidence scores</span>
+          </div>
+          <div className="card-body">
+            <h3 id="potential-issues-heading">Things to inspect</h3>
+            {potentialIssues.length ? (
+              <div className="potential-issue-list">
+                {potentialIssues.map((issue, index) => (
+                  <article className="potential-issue-item" key={`${issue.filename}-${issue.location}-${index}`}>
+                    <div className="finding-meta">
+                      <span className={`finding-assessment ${issue.assessment}`}>{issue.assessment === 'observed' ? 'Observed behavior' : 'Inferred risk'}</span>
+                      {issue.filename && <code>{issue.filename}</code>}
+                      <span>{issue.location}</span>
+                    </div>
+                    <h4>{issue.title}</h4>
+                    <p><strong>Evidence:</strong> {issue.evidence}</p>
+                    <p><strong>Why it matters:</strong> {issue.why_it_matters}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-state">No specific potential problem was identified in the supplied files. This does not prove the code is defect-free.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="result-card missing-context-card" aria-labelledby="missing-context-heading">
+          <div className="card-header">
+            <div className="card-tag tag-rose"><span>Evidence and uncertainty</span></div>
+          </div>
+          <div className="card-body">
+            <h3 id="missing-context-heading">Context that could clarify the analysis</h3>
+            {missingContext.length ? (
+              <ul className="uncertainties-list">{missingContext.map((item, index) => <li key={index}>{item}</li>)}</ul>
+            ) : (
+              <p className="empty-state">No additional context was requested. Verify the analysis against the rest of the repository and its runtime behavior.</p>
+            )}
+          </div>
+        </section>
+
+        {/* Keep every analysis field visible together; filters previously hid important context. */}
         <div className="cards-grid">
 
-          {/* Card 1: Issue Summary */}
-          {activeTab === 'all' && (
+          {/* Card 1: Summary */}
             <div className="result-card card-span-full">
               <div className="card-header">
                 <div className="card-tag tag-violet">
@@ -154,7 +163,7 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                     <line x1="16" y1="13" x2="8" y2="13"/>
                     <line x1="16" y1="17" x2="8" y2="17"/>
                   </svg>
-                  <span>1. Issue Summary</span>
+                  <span>Analysis Summary</span>
                 </div>
                 <span className="field-type">Type: String</span>
               </div>
@@ -166,10 +175,8 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 )}
               </div>
             </div>
-          )}
 
           {/* Card 2: Relevant Files */}
-          {activeTab === 'all' && (
             <div className="result-card card-span-full">
               <div className="card-header">
                 <div className="card-tag tag-blue">
@@ -200,11 +207,9 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 )}
               </div>
             </div>
-          )}
 
           {/* Card 3: Contribution Plan */}
-          {(activeTab === 'all' || activeTab === 'plan') && (
-            <div className={`result-card ${activeTab === 'plan' ? 'card-span-full' : 'card-half'}`}>
+            <div className="result-card card-half">
               <div className="card-header">
                 <div className="card-tag tag-emerald">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -216,22 +221,12 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 <span className="field-type">{data.contribution_plan.length} Actionable Steps</span>
               </div>
               <div className="card-body">
-                {data.contribution_plan.length > 0 ? (
-                  <ol className="plan-steps-list">
-                    {data.contribution_plan.map((step, i) => (
-                      <li key={i}>{step}</li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="empty-state">No contribution steps were provided.</p>
-                )}
+                <GuidedContribution steps={data.contribution_plan} />
               </div>
             </div>
-          )}
 
           {/* Card 4: Suggested Tests */}
-          {(activeTab === 'all' || activeTab === 'tests') && (
-            <div className={`result-card ${activeTab === 'tests' ? 'card-span-full' : 'card-half'}`}>
+            <div className="result-card card-half">
               <div className="card-header">
                 <div className="card-tag tag-amber">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -243,6 +238,7 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 <span className="field-type">{data.suggested_tests.length} Test Cases</span>
               </div>
               <div className="card-body">
+                <p className="suggested-not-run">Suggestions only. FirstPatch AI has not executed these tests.</p>
                 {data.suggested_tests.length > 0 ? (
                   <ul className="tests-list">
                     {data.suggested_tests.map((test, i) => (
@@ -254,10 +250,8 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 )}
               </div>
             </div>
-          )}
 
           {/* Card 5: Uncertainties */}
-          {activeTab === 'all' && (
             <div className="result-card card-span-full">
               <div className="card-header">
                 <div className="card-tag tag-rose">
@@ -282,8 +276,8 @@ export const IllustrativeResults: React.FC<IllustrativeResultsProps> = ({ result
                 )}
               </div>
             </div>
-          )}
 
+          <ContributionReadiness result={data} />
         </div>
       </div>
     </section>

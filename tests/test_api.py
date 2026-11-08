@@ -1,27 +1,37 @@
 """Automated tests for FirstPatch AI FastAPI backend (api.py).
 
 Uses FastAPI TestClient and mocked analyzer functions.
-Never calls the live Gemini API or consumes API credits.
+Never calls a live provider or consumes request quota.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import time
 from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
 import api
 from api import app
+from firstpatch.files import MAX_FILE_COUNT
 from firstpatch.analyzer import (
     AnalyzerAPIError,
     AnalyzerConfigurationError,
     AnalyzerOutputError,
+    AnalyzerTimeoutError,
     AnalyzerValidationError,
 )
 
 client = TestClient(app)
+
+
+def post_analysis(*, data: dict[str, str] | None = None, files: Any | None = None):
+    """Submit multipart analysis with a small default source file."""
+    if files is None:
+        files = [("files", ("context.py", b"def run(): return True\n", "text/x-python"))]
+    return client.post("/api/analyze", data=data or {}, files=files)
 
 
 def fake_successful_analysis(
@@ -62,14 +72,22 @@ def test_health_check_endpoint():
     assert response.json()["status"] == "ok"
 
 
-# 1. Valid issue-only request returns all five required fields
-def test_valid_issue_only_analysis(monkeypatch: pytest.MonkeyPatch):
-    """Verify successful analysis when no files are uploaded."""
+def test_frontend_serving_and_client_route_fallback(tmp_path, monkeypatch):
+    """Production serving returns the SPA entry point without masking API 404s."""
+    (tmp_path / "index.html").write_text("<!doctype html><title>FirstPatch</title>", encoding="utf-8")
+    monkeypatch.setattr(api, "FRONTEND_DIST", tmp_path)
+
+    assert "FirstPatch" in client.get("/").text
+    assert "FirstPatch" in client.get("/workspace").text
+    assert client.get("/api/missing").status_code == 404
+
+
+# 1. Valid focused request returns all five required fields
+def test_valid_focused_analysis(monkeypatch: pytest.MonkeyPatch):
+    """Verify successful analysis with a supplied issue and uploaded file."""
     monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Fix IndexError when list is empty in parser."},
+    response = post_analysis(data={"issue_description": "Fix IndexError when list is empty in parser."},
     )
 
     assert response.status_code == 200
@@ -85,7 +103,7 @@ def test_valid_issue_only_analysis(monkeypatch: pytest.MonkeyPatch):
     # Internal metadata must NOT be leaked
     assert "unknown_files_removed" not in data
 
-    assert data["relevant_files"] == []
+    assert len(data["relevant_files"]) == 1
     assert len(data["contribution_plan"]) == 3
     assert len(data["suggested_tests"]) == 2
 
@@ -106,9 +124,7 @@ def test_valid_analysis_with_source_files(monkeypatch: pytest.MonkeyPatch):
         ("files", ("config.json", b'{"port": 8080}', "application/json")),
     ]
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Upgrade server configuration."},
+    response = post_analysis(data={"issue_description": "Upgrade server configuration."},
         files=file_payload,
     )
 
@@ -123,22 +139,69 @@ def test_valid_analysis_with_source_files(monkeypatch: pytest.MonkeyPatch):
     assert "config.json" in recorded_calls[0]["files"]
 
 
-# 3. Missing or blank issue description is rejected
-@pytest.mark.parametrize("blank_desc", ["", "   ", "\n\t"])
-def test_blank_issue_description_rejected(blank_desc: str):
-    """Verify that empty or whitespace-only issue descriptions return 400 Bad Request."""
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": blank_desc},
+def test_file_only_analysis_accepts_missing_issue_and_returns_new_sections(monkeypatch: pytest.MonkeyPatch):
+    recorded: list[dict[str, Any]] = []
+
+    def spy_analyze(issue_description: str, files: dict[str, str] | None = None, **kwargs: Any):
+        recorded.append({"issue": issue_description, "files": files})
+        result = fake_successful_analysis(issue_description, files)
+        result.update({
+            "project_overview": "The selected file defines a function.",
+            "file_explanations": [{"filename": "main.py", "purpose": "Defines main.", "important_elements": ["main()"], "relationships": "No other files were supplied."}],
+            "potential_issues": [],
+            "missing_context": ["Callers were not supplied."],
+        })
+        return result
+
+    monkeypatch.setattr(api, "analyze_issue", spy_analyze)
+    response = post_analysis(data={"issue_description": "  "},
+        files=[("files", ("main.py", b"def main(): return 1\n", "text/x-python"))],
     )
-    assert response.status_code == 400
-    assert "issue description" in response.json()["detail"].lower()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert recorded[0]["issue"] == ""
+    assert recorded[0]["files"]["main.py"].startswith("def main")
+    assert body["project_overview"]
+    assert body["file_explanations"][0]["filename"] == "main.py"
+    assert body["potential_issues"] == []
+    assert body["missing_context"]
+    assert {"issue_summary", "relevant_files", "contribution_plan", "suggested_tests", "uncertainties"} <= body.keys()
 
 
-def test_missing_issue_description_field():
-    """Verify that requests missing the issue_description field return 400 Bad Request."""
-    response = client.post("/api/analyze", data={})
+def test_upload_file_count_limit_is_enforced_before_analysis(monkeypatch: pytest.MonkeyPatch):
+    def should_not_run(*args: Any, **kwargs: Any):
+        raise AssertionError("Analyzer must not run when file count exceeds the server limit")
+
+    monkeypatch.setattr(api, "analyze_issue", should_not_run)
+    payload = [("files", (f"module_{index}.txt", b"x", "text/plain")) for index in range(MAX_FILE_COUNT + 1)]
+    response = post_analysis( data={}, files=payload)
     assert response.status_code == 400
+    assert str(MAX_FILE_COUNT) in response.json()["detail"]
+
+
+# 3. Issue descriptions are optional when source files are supplied
+@pytest.mark.parametrize("blank_desc", ["", "   ", "\n\t"])
+def test_blank_issue_description_accepted_with_source_file(monkeypatch: pytest.MonkeyPatch, blank_desc: str):
+    """Verify blank issue descriptions do not block file-only analysis."""
+    monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
+    response = post_analysis(data={"issue_description": blank_desc},
+    )
+    assert response.status_code == 200
+
+
+def test_missing_issue_description_field(monkeypatch: pytest.MonkeyPatch):
+    """The issue field may be omitted when the required file is present."""
+    monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
+    response = post_analysis( data={})
+    assert response.status_code == 200
+    assert response.json()["issue_summary"]
+
+
+def test_issue_only_request_is_rejected():
+    response = client.post("/api/analyze", data={"issue_description": "Investigate this."})
+    assert response.status_code == 400
+    assert "upload at least one source file" in response.json()["detail"].lower()
 
 
 # 4. Unsupported file extension is rejected
@@ -146,9 +209,7 @@ def test_unsupported_file_extension_rejected(monkeypatch: pytest.MonkeyPatch):
     """Verify that files with unsupported extensions return 400 Bad Request."""
     monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Check binary execution."},
+    response = post_analysis(data={"issue_description": "Check binary execution."},
         files=[("files", ("script.exe", b"binary data", "application/octet-stream"))],
     )
     assert response.status_code == 400
@@ -160,9 +221,7 @@ def test_empty_file_rejected(monkeypatch: pytest.MonkeyPatch):
     """Verify that 0-byte uploaded files return 400 Bad Request."""
     monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report with empty file."},
+    response = post_analysis(data={"issue_description": "Bug report with empty file."},
         files=[("files", ("empty.py", b"", "text/x-python"))],
     )
     assert response.status_code == 400
@@ -174,9 +233,7 @@ def test_invalid_utf8_file_rejected(monkeypatch: pytest.MonkeyPatch):
     """Verify that non-UTF-8 uploaded files return 400 Bad Request."""
     monkeypatch.setattr(api, "analyze_issue", fake_successful_analysis)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report with corrupted text."},
+    response = post_analysis(data={"issue_description": "Bug report with corrupted text."},
         files=[("files", ("bad.txt", b"\xff\xfe\x00\x00\x80", "text/plain"))],
     )
     assert response.status_code == 400
@@ -193,9 +250,7 @@ def test_duplicate_filenames_rejected(monkeypatch: pytest.MonkeyPatch):
         ("files", ("model.py", b"class ModelB: pass\n", "text/x-python")),
     ]
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report with duplicate files."},
+    response = post_analysis(data={"issue_description": "Bug report with duplicate files."},
         files=file_payload,
     )
     assert response.status_code == 400
@@ -210,9 +265,7 @@ def test_combined_uploads_exceeding_200kb_rejected(monkeypatch: pytest.MonkeyPat
     # 204,801 bytes (1 byte over 200 KB)
     oversized = b"a" * 204_801
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report with oversized file."},
+    response = post_analysis(data={"issue_description": "Bug report with oversized file."},
         files=[("files", ("large.txt", oversized, "text/plain"))],
     )
     assert response.status_code == 400
@@ -224,34 +277,110 @@ def test_combined_uploads_exceeding_200kb_rejected(monkeypatch: pytest.MonkeyPat
 def test_analyzer_configuration_error(monkeypatch: pytest.MonkeyPatch):
     """Verify that missing credentials or model return 503 Service Unavailable safely."""
     def raise_config_err(*args: Any, **kwargs: Any):
-        raise AnalyzerConfigurationError("GEMINI_API_KEY environment variable is not set.")
+        raise AnalyzerConfigurationError("OPENROUTER_API_KEY environment variable is not set.")
 
     monkeypatch.setattr(api, "analyze_issue", raise_config_err)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report."},
+    response = post_analysis(data={"issue_description": "Bug report."},
     )
     assert response.status_code == 503
     # Ensure sensitive environment details are not leaked
-    assert "GEMINI_API_KEY" not in response.json()["detail"]
+    assert "OPENROUTER_API_KEY" not in response.json()["detail"]
     assert "configuration" in response.json()["detail"].lower()
 
 
-# 10. Upstream model errors return a safe error response
+# 10. Upstream provider errors return a safe error response
 def test_upstream_model_api_error(monkeypatch: pytest.MonkeyPatch):
     """Verify that upstream API errors return 502 Bad Gateway safely."""
     def raise_api_err(*args: Any, **kwargs: Any):
-        raise AnalyzerAPIError("Google API 429 Quota Exceeded.")
+        raise AnalyzerAPIError("Private provider error body")
 
     monkeypatch.setattr(api, "analyze_issue", raise_api_err)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report."},
+    response = post_analysis(data={"issue_description": "Bug report."},
     )
     assert response.status_code == 502
-    assert "upstream ai model request failed" in response.json()["detail"].lower()
+    assert "upstream service error" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    ("category", "retryable", "retry_after", "expected_detail"),
+    [
+        ("quota_exhausted", False, None, "openrouter free-model quota may be exhausted"),
+        ("rate_limited", True, 4, "openrouter is temporarily rate-limiting"),
+    ],
+)
+def test_openrouter_429_categories_are_returned_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    category: str,
+    retryable: bool,
+    retry_after: int | None,
+    expected_detail: str,
+):
+    def raise_categorized(*args: Any, **kwargs: Any):
+        raise AnalyzerAPIError(
+            "safe mocked error",
+            status_code=429,
+            category=category,
+            retryable=retryable,
+            retry_after_seconds=retry_after,
+        )
+
+    monkeypatch.setattr(api, "analyze_issue", raise_categorized)
+    response = post_analysis( data={"issue_description": "Bug report."})
+
+    assert response.status_code == 429
+    assert expected_detail in response.json()["detail"].lower()
+    assert "safe mocked error" not in response.text
+    if retry_after:
+        assert response.headers.get("Retry-After") == str(retry_after)
+
+
+def test_upstream_timeout_maps_to_gateway_timeout(monkeypatch: pytest.MonkeyPatch):
+    """Upstream model deadline failures return a retryable 504 response."""
+    def raise_timeout(*args: Any, **kwargs: Any):
+        raise AnalyzerTimeoutError("safe timeout message")
+
+    monkeypatch.setattr(api, "analyze_issue", raise_timeout)
+    response = post_analysis( data={"issue_description": "Bug report."})
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"].lower()
+
+
+def test_overall_analysis_deadline_returns_504(monkeypatch: pytest.MonkeyPatch):
+    """The endpoint deadline bounds a stalled analyzer worker."""
+    def slow_analysis(*args: Any, **kwargs: Any):
+        time.sleep(0.1)
+        return fake_successful_analysis("Issue")
+
+    monkeypatch.setattr(api, "analyze_issue", slow_analysis)
+    monkeypatch.setattr(api, "ANALYSIS_REQUEST_TIMEOUT_SECONDS", 0.01)
+    response = post_analysis( data={"issue_description": "Bug report."})
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"].lower()
+
+
+def test_upstream_bad_request_explains_server_configuration_safely(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Surface actionable config guidance without exposing upstream bodies."""
+    def raise_bad_request(*args: Any, **kwargs: Any):
+        raise AnalyzerAPIError(
+            "Upstream AI API request failed with HTTP status 400: ClientError",
+            status_code=400,
+        )
+
+    monkeypatch.setattr(api, "analyze_issue", raise_bad_request)
+    response = post_analysis( data={"issue_description": "Bug report."})
+
+    assert response.status_code == 502
+    detail = response.json()["detail"].lower()
+    assert "openrouter rejected" in detail
+    assert "model" in detail
+    assert "api key" not in detail
+    assert "clienterror" not in detail
 
 
 def test_upstream_api_error_502_sanitized_no_secret_in_logs(
@@ -274,14 +403,12 @@ def test_upstream_api_error_502_sanitized_no_secret_in_logs(
     monkeypatch.setattr(api, "analyze_issue", raise_with_chained_cause)
 
     with caplog.at_level(logging.ERROR, logger="firstpatch.api"):
-        response = client.post(
-            "/api/analyze",
-            data={"issue_description": "Bug report."},
+        response = post_analysis(data={"issue_description": "Bug report."},
         )
 
     assert response.status_code == 502
     detail = response.json()["detail"].lower()
-    assert "upstream ai model request failed" in detail
+    assert "upstream service error" in detail
     # Frontend must never see the upstream status code or secret
     assert secret_api_key not in response.text
     assert "authorization" not in response.text
@@ -303,9 +430,7 @@ def test_unexpected_exception_safety(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(api, "analyze_issue", raise_unexpected)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report."},
+    response = post_analysis(data={"issue_description": "Bug report."},
     )
     assert response.status_code == 500
     assert secret_internal_string not in response.text
@@ -321,9 +446,7 @@ def test_invalid_model_output_error(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(api, "analyze_issue", raise_output_err)
 
-    response = client.post(
-        "/api/analyze",
-        data={"issue_description": "Bug report."},
+    response = post_analysis(data={"issue_description": "Bug report."},
     )
     assert response.status_code == 502
     assert "upstream model output was malformed" in response.json()["detail"].lower()

@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 # Maximum total upload size in bytes (200 KB = 200 * 1024)
 MAX_COMBINED_SIZE_BYTES: int = 204_800
+MAX_FILE_COUNT: int = 20
 
 # Allowed file extensions for issue context
 ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
