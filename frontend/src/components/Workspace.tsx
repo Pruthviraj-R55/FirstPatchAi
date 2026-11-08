@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { AnalysisResult } from '../types/api';
 import '../styles/Workspace.css';
 
@@ -8,14 +8,22 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.md', '.txt', '.json', '.yml', '.yaml', '.toml',
 ]);
 const MAX_COMBINED_BYTES = 204_800; // 200 KB, mirroring the backend limit
-const API_ENDPOINT = 'http://localhost:8000/api/analyze';
+const MAX_FILE_COUNT = 20; // Keep the client limit aligned with the backend.
+// Same-origin by default so a single production deployment needs no CORS setup.
+// Set VITE_API_BASE_URL only when the API is hosted on a separate origin.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+const API_ENDPOINT = `${API_BASE_URL}/api/analyze`;
+const configuredTimeout = Number(import.meta.env.VITE_ANALYSIS_REQUEST_TIMEOUT_MS);
+const ANALYSIS_TIMEOUT_MS = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+  ? configuredTimeout
+  : 105_000;
 
 // --- Types ---
 
 type RequestState = 'idle' | 'loading' | 'success' | 'error';
 
 interface WorkspaceProps {
-  onAnalysisComplete: (result: AnalysisResult) => void;
+  onAnalysisComplete: (result: AnalysisResult | null) => void;
 }
 
 // --- Helpers ---
@@ -27,6 +35,9 @@ function getExtension(filename: string): string {
 }
 
 function validateFiles(files: File[]): string | null {
+  if (files.length > MAX_FILE_COUNT) {
+    return `Choose no more than ${MAX_FILE_COUNT} files per analysis.`;
+  }
   const seen = new Set<string>();
   let totalBytes = 0;
 
@@ -67,13 +78,44 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
 
   const [requestState, setRequestState] = useState<RequestState>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [retryAllowed, setRetryAllowed] = useState(false);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [clientValidationError, setClientValidationError] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const requestInFlightRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (retryAfterSeconds === null || retryAfterSeconds <= 0) return;
+    const timer = window.setTimeout(() => {
+      setRetryAfterSeconds((remaining) => remaining === null ? null : Math.max(0, remaining - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [retryAfterSeconds]);
+
+  const clearErrorOnEdit = () => {
+    if (requestState === 'error') {
+      setRequestState('idle');
+      setErrorMessage('');
+      setRetryAllowed(false);
+      setRetryAfterSeconds(null);
+    }
+  };
 
   // ---- File management ----
 
   const mergeFiles = (incoming: File[]) => {
+    clearErrorOnEdit();
     setSelectedFiles(prev => {
       const existingNames = new Set(prev.map(f => f.name));
       const deduped = incoming.filter(f => !existingNames.has(f.name));
@@ -85,6 +127,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
   };
 
   const removeFile = (fileName: string) => {
+    clearErrorOnEdit();
     setSelectedFiles(prev => {
       const next = prev.filter(f => f.name !== fileName);
       const err = validateFiles(next);
@@ -117,11 +160,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
       'Currently in username_validator.py, passing None crashes with an unhandled exception ' +
       'rather than returning False or raising a descriptive validation error.',
     );
-    // Clear files — sample issue works without files attached
-    setSelectedFiles([]);
+    // Keep the existing sample workflow useful now that files are required.
+    setSelectedFiles([new File(
+      ['def validate_username(username):\n    if username is None:\n        raise ValueError("Username cannot be None")\n    return True\n'],
+      'username_validator.py',
+      { type: 'text/x-python' },
+    )]);
     setClientValidationError('');
     setErrorMessage('');
     setRequestState('idle');
+    onAnalysisComplete(null);
   };
 
   const handleClear = () => {
@@ -130,21 +178,36 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
     setClientValidationError('');
     setErrorMessage('');
     setRequestState('idle');
+    onAnalysisComplete(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // ---- Analysis submission ----
 
   const handleAnalyze = async () => {
+    if (requestInFlightRef.current) return;
     // Client-side validation
-    if (!issueText.trim()) {
-      setClientValidationError('Issue description cannot be empty.');
+    if (selectedFiles.length === 0) {
+      setClientValidationError('Upload at least one source file to begin analysis.');
       return;
     }
     if (clientValidationError) return; // pre-existing file validation error
 
+    requestInFlightRef.current = true;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    let timedOut = false;
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, ANALYSIS_TIMEOUT_MS);
+
     setRequestState('loading');
     setErrorMessage('');
+    setRetryAllowed(false);
+    setRetryAfterSeconds(null);
+    onAnalysisComplete(null);
 
     const formData = new FormData();
     formData.append('issue_description', issueText.trim());
@@ -158,20 +221,23 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
       const response = await fetch(API_ENDPOINT, {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       });
 
       if (response.ok) {
         const data: AnalysisResult = await response.json();
+        settled = true;
         onAnalysisComplete(data);
         setRequestState('success');
         // Scroll the results section into view
         setTimeout(() => {
           document.getElementById('illustrative-preview')?.scrollIntoView({
-            behavior: 'smooth',
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
             block: 'start',
           });
         }, 100);
       } else {
+        settled = true;
         // Parse API error detail
         let detail = `Request failed with status ${response.status}.`;
         try {
@@ -185,35 +251,70 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
 
         if (response.status === 400) {
           setErrorMessage(`Validation error: ${detail}`);
+          setRetryAllowed(false);
         } else if (response.status === 503) {
-          setErrorMessage(
-            'The analyzer service is unavailable. ' +
-            'Check that the backend server is configured with a valid API key and is running.',
-          );
+          const isNetworkFailure = /could not reach openrouter|network connectivity/i.test(detail);
+          setErrorMessage(isNetworkFailure
+            ? 'FirstPatch AI cannot reach OpenRouter right now. Check the server network connection and retry; your files and description are still here.'
+            : 'The analyzer could not authenticate with OpenRouter. The server operator should check its backend API key and account access.');
+          setRetryAllowed(isNetworkFailure && response.headers.get('X-Analysis-Retryable') === 'true');
         } else if (response.status === 502) {
-          setErrorMessage(
-            `AI model error: ${detail} ` +
-            'Try again or check the backend terminal for details.',
-          );
+          if (/rejected the analysis request/i.test(detail)) {
+            setErrorMessage('OpenRouter rejected this request. The server operator should check the configured free model and request.');
+            setRetryAllowed(false);
+          } else {
+            setErrorMessage('OpenRouter could not complete the analysis because of an upstream service error. Your inputs are preserved.');
+            setRetryAllowed(response.headers.get('X-Analysis-Retryable') === 'true');
+          }
+        } else if (response.status === 429) {
+          if (/quota .* exhausted|quota.+exhausted/i.test(detail)) {
+            setErrorMessage('The OpenRouter free-model quota may be exhausted. Check the account limits; this app does not fall back to a paid model.');
+            setRetryAllowed(false);
+          } else {
+            const waitSeconds = Number(response.headers.get('Retry-After'));
+            setErrorMessage(detail);
+            setRetryAllowed(true);
+            setRetryAfterSeconds(Number.isFinite(waitSeconds) && waitSeconds > 0 ? waitSeconds : null);
+          }
+        } else if (response.status === 504) {
+          setErrorMessage('Analysis timed out while waiting for OpenRouter. Your issue and files are still here; please retry in a moment.');
+          setRetryAllowed(true);
+        } else if (response.status >= 500) {
+          setErrorMessage(`FirstPatch AI returned a server error (${response.status}). Try again shortly.`);
         } else {
           setErrorMessage(`Unexpected error (${response.status}): ${detail}`);
         }
         setRequestState('error');
       }
-    } catch (networkErr) {
-      setErrorMessage(
-        'Could not reach the FirstPatch AI backend. ' +
-        'Make sure the backend server is running: ' +
-        'uvicorn api:app --reload --port 8000',
-      );
-      setRequestState('error');
+    } catch {
+      settled = true;
+      if (mountedRef.current) {
+        setErrorMessage(timedOut
+          ? 'Analysis took too long to respond. Your issue and files are still here; please retry.'
+          : 'Could not connect to FirstPatch AI. Check your connection and confirm the application server is available, then retry. Your issue and selected files are still here.');
+        setRequestState('error');
+        setRetryAllowed(true);
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      requestInFlightRef.current = false;
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      if (mountedRef.current && !settled) {
+        // Defensive fallback: every completed fetch path should have set a terminal state.
+        setRequestState('error');
+        setErrorMessage(current => current || 'Analysis ended without a response. Please retry.');
+      }
     }
   };
 
   // ---- Derived state ----
 
   const isLoading = requestState === 'loading';
-  const canAnalyze = !isLoading && !clientValidationError && issueText.trim().length > 0;
+  const canAnalyze = !isLoading
+    && !clientValidationError
+    && selectedFiles.length > 0
+    && (requestState !== 'error' || retryAllowed)
+    && !(retryAfterSeconds !== null && retryAfterSeconds > 0);
 
   // ---- Render ----
 
@@ -222,31 +323,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
       <div className="section-container">
         {/* Section Header */}
         <div className="section-header">
-          <div className="section-badge">Interactive Workspace</div>
+          <div className="section-badge">Code understanding</div>
           <h2 id="workspace-heading" className="section-title">
-            Analyze an Issue with Codebase Context
+            Start with the code.
           </h2>
           <p className="section-description">
-            Provide the problem statement and the relevant source files from the repository.
+            Upload selected source files for an automatic explanation and potential problem review. An issue description is optional context.
           </p>
         </div>
 
-        {/* Data Flow Notice — accurate, not misleading */}
-        <div className="prototype-notice-banner" role="status">
-          <div className="notice-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-          </div>
-          <div className="notice-content">
-            <strong>Data flow:</strong> Your issue description and selected source files are sent to the FirstPatch AI backend when you click Analyze.
-            The backend processes uploaded files in memory and sends the analysis input to the configured AI service.
-            Uploaded files are not intentionally written to disk or executed.
-            Keep your Gemini API key on the backend server only.
-          </div>
-        </div>
+        <details className="workflow-disclosure">
+          <summary>How your issue and files are handled</summary>
+          <p>When you submit, your selected files and optional issue description are sent to the FirstPatch AI backend and then to OpenRouter for analysis. Files are validated and processed in memory; they are not executed. Keep the OpenRouter API key on the backend server.</p>
+        </details>
 
         {/* Workspace Panel */}
         <div className="workspace-card">
@@ -254,17 +343,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
           <div className="workspace-toolbar">
             <div className="toolbar-title">
               <span className="dot dot-violet"></span>
-              <span>Issue Context &amp; Source Inspector</span>
+              <span>New analysis</span>
             </div>
             <div className="toolbar-actions">
               <button
                 type="button"
                 className="btn-toolbar"
                 onClick={handleLoadSample}
-                title="Fill with a realistic open-source bug example"
+                title="Fill with a sample issue and source file"
                 disabled={isLoading}
               >
-                <span>Load Sample Issue</span>
+                <span>Load Sample</span>
               </button>
               {(issueText || selectedFiles.length > 0) && (
                 <button
@@ -280,38 +369,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
           </div>
 
           <div className="workspace-body">
-            {/* 1. Issue Description */}
-            <div className="form-group">
+            {/* Primary action: understand uploaded source files. */}
+            <div className="form-group file-upload-group">
               <div className="label-row">
-                <label htmlFor="issue-description" className="input-label">
-                  1. GitHub Issue Description <span className="required">*</span>
+                <label className="input-label" htmlFor="file-input">
+                  Source files <span className="label-optional">(Required)</span>
                 </label>
-                <span className="character-count">{issueText.length} characters</span>
+                <span className="file-constraints">Up to {MAX_FILE_COUNT} files · 200 KB combined</span>
               </div>
-              <textarea
-                id="issue-description"
-                className="issue-textarea"
-                rows={7}
-                placeholder="Paste the issue description, bug report, or feature request here (e.g., 'Fix TypeError when parsing null configuration values in config_loader...')"
-                value={issueText}
-                onChange={(e) => {
-                  setIssueText(e.target.value);
-                  if (clientValidationError === 'Issue description cannot be empty.') {
-                    setClientValidationError('');
-                  }
-                }}
-                disabled={isLoading}
-              />
-            </div>
-
-            {/* 2. File Upload */}
-            <div className="form-group">
-              <div className="label-row">
-                <label className="input-label">
-                  2. Codebase Files <span className="label-optional">(Optional)</span>
-                </label>
-                <span className="file-constraints">Max 200 KB combined · 12 supported extensions</span>
-              </div>
+              <p id="file-upload-help" className="form-help">
+                Upload the source files you want explained. You can start even when you do not know what problem to look for. Add an issue description only if you want to focus the investigation. Uploaded code is never executed.
+              </p>
 
               <div
                 className={`dropzone-container ${isDragging ? 'dragging' : ''}`}
@@ -324,6 +392,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 role="button"
                 tabIndex={0}
                 aria-label="Upload source files — click or drag and drop"
+                aria-describedby={clientValidationError ? 'file-upload-help file-validation-error' : 'file-upload-help'}
                 onKeyDown={(e) => {
                   if ((e.key === 'Enter' || e.key === ' ') && !isLoading) {
                     e.preventDefault();
@@ -339,6 +408,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                   multiple
                   onChange={handleFileSelect}
                   accept=".py,.js,.ts,.java,.c,.cpp,.md,.txt,.json,.yml,.yaml,.toml"
+                  aria-describedby={clientValidationError ? 'file-upload-help file-validation-error' : 'file-upload-help'}
                   disabled={isLoading}
                   // Stop the click from bubbling back up to the container (avoids double open)
                   onClick={(e) => e.stopPropagation()}
@@ -359,7 +429,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                     {' '}or drag &amp; drop code files here
                   </span>
                   <span className="dropzone-secondary">
-                    Supported: .py, .js, .ts, .java, .c, .cpp, .md, .txt, .json, .yml, .yaml, .toml
+                  20 files maximum · 200 KB combined · .py, .js, .ts, .java, .c, .cpp, .md, .txt, .json, .yml, .yaml, .toml
                   </span>
                 </div>
               </div>
@@ -393,13 +463,39 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
 
               {/* Client-side validation error */}
               {clientValidationError && (
-                <div className="validation-error" role="alert">
+                <div id="file-validation-error" className="validation-error" role="alert">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                   </svg>
                   {clientValidationError}
                 </div>
               )}
+            </div>
+
+            {/* Optional issue context */}
+            <div className="form-group issue-context-group">
+              <div className="label-row">
+                <label htmlFor="issue-description" className="input-label">
+                  Describe a problem <span className="label-optional">(Optional)</span>
+                </label>
+                <span className="character-count">{issueText.length} characters</span>
+              </div>
+              <p id="issue-description-help" className="form-help">
+                Have a specific issue? Add what you expected, what happened, and how to reproduce it. You can leave this blank to understand the uploaded code.
+              </p>
+              <textarea
+                id="issue-description"
+                className="issue-textarea"
+                rows={5}
+                placeholder="Optional: paste a bug report or describe what you want to investigate."
+                value={issueText}
+                aria-describedby="issue-description-help"
+                onChange={(e) => {
+                  setIssueText(e.target.value);
+                  clearErrorOnEdit();
+                }}
+                disabled={isLoading}
+              />
             </div>
 
             {/* API Error Banner */}
@@ -429,14 +525,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 <span
                   className={`status-indicator ${isLoading ? 'status-loading' : requestState === 'success' ? 'status-success' : requestState === 'error' ? 'status-error' : ''}`}
                 ></span>
-                <span>
+                <span role="status" aria-live="polite">
                   {isLoading
-                    ? 'Sending request to backend…'
+                    ? selectedFiles.length > 0
+                      ? 'Reading the selected files and preparing your analysis…'
+                      : 'Preparing your issue analysis…'
                     : requestState === 'success'
                     ? 'Analysis returned successfully'
                     : requestState === 'error'
                     ? 'Request failed'
-                    : 'Ready for analysis'}
+                    : selectedFiles.length > 0
+                      ? 'Ready to understand selected code'
+                      : 'Upload source files to begin; issue description is optional'}
                 </span>
               </div>
 
@@ -451,11 +551,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({ onAnalysisComplete }) => {
                 {isLoading ? (
                   <>
                     <span className="spinner" aria-hidden="true"></span>
-                    <span>Analyzing Issue…</span>
+                    <span>Analyzing…</span>
                   </>
                 ) : (
                   <>
-                    <span>Analyze Issue</span>
+                    <span>{requestState === 'error' && retryAllowed
+                      ? retryAfterSeconds && retryAfterSeconds > 0 ? `Retry in ${retryAfterSeconds}s` : 'Retry analysis'
+                      : selectedFiles.length > 0 ? 'Understand this code' : 'Analyze this issue'}</span>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                       <path d="M5 12H19M19 12L12 5M19 12L12 19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>

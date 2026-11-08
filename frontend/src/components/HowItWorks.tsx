@@ -5,23 +5,23 @@ export const HowItWorks: React.FC = () => {
   const steps = [
     {
       number: '01',
-      title: 'Describe the GitHub Issue',
-      description: 'Paste any bug report, user issue description, or feature request from an open-source repository.',
-      details: 'FirstPatch AI extracts the core problem statement, error traces, and expected behavior.',
+      title: 'Upload selected source files',
+      description: 'Choose the files you want to understand. You can start even when you are unsure what is wrong.',
+      details: 'Only uploaded files are analyzed. They are validated in memory and never executed.',
       accent: 'violet'
     },
     {
       number: '02',
-      title: 'Provide Relevant Source Files',
-      description: 'Upload candidate code files from the project repository to provide context for the issue.',
-      details: 'Files are validated in-memory under strict 200 KB limits with zero disk writes and no arbitrary execution.',
+      title: 'Add an issue if you have one',
+      description: 'Describe a specific symptom as optional context to focus the investigation.',
+      details: 'Without an issue, FirstPatch AI focuses on file understanding and evidence-backed potential problems.',
       accent: 'blue'
     },
     {
       number: '03',
-      title: 'Review Structured Contribution Plan',
-      description: 'Receive an actionable 5-part roadmap including problem summary, file mapping, steps, and tests.',
-      details: 'Gemma models generate verified JSON guidance designed to give beginner contributors total confidence.',
+      title: 'Review understanding and next steps',
+      description: 'Explore file explanations, potential problems, contribution steps, test ideas, and unknowns.',
+      details: 'Observed behavior is separated from inferred risk. Suggested tests are not run.',
       accent: 'emerald'
     }
   ];
@@ -35,7 +35,7 @@ export const HowItWorks: React.FC = () => {
             How FirstPatch AI Works
           </h2>
           <p className="section-description">
-            A secure, predictable workflow built to guide new contributors from confusion to their first approved pull request.
+            A focused workflow from selected files to a clearer mental model and a place to begin.
           </p>
         </div>
 
@@ -65,7 +65,7 @@ export const HowItWorks: React.FC = () => {
         <div className="how-status-callout">
           <span className="status-dot-pulse"></span>
           <span>
-            <strong>Architecture Notice:</strong> The Python backend (Streamlit + Gemma 4 via official <code>google-genai</code> SDK) is fully tested. This React frontend represents Stage 1 (visual UI foundation) and is not yet connected to the backend API.
+            <strong>Built for a focused first patch:</strong> The FastAPI service validates every request and returns a structured plan. Uploaded files are processed in memory and never executed.
           </span>
         </div>
       </div>

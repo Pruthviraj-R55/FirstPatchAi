@@ -6,12 +6,12 @@ export const Features: React.FC = () => {
     <section id="features" className="features-section" aria-labelledby="features-heading">
       <div className="section-container">
         <div className="section-header">
-          <div className="section-badge">Core Architecture</div>
+          <div className="section-badge">What the analysis covers</div>
           <h2 id="features-heading" className="section-title">
-            Engineered for Beginners & Safety
+            Understand the files before you make a change.
           </h2>
           <p className="section-description">
-            FirstPatch AI combines modern Gen AI reasoning with defensive engineering to keep local environments completely safe.
+            Get a plain-language explanation of selected files, evidence-led potential problems, and beginner-friendly investigation steps. Verify the guidance against the project itself.
           </p>
         </div>
 
@@ -25,12 +25,12 @@ export const Features: React.FC = () => {
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
               </svg>
             </div>
-            <h3 className="bento-title">Prompt Injection Defense & Untrusted Data Boundaries</h3>
+            <h3 className="bento-title">Understand the supplied code</h3>
             <p className="bento-desc">
-              All user-submitted issue descriptions and uploaded files are wrapped within strict XML-demarcated untrusted boundaries. The analyzer strictly commands the model never to execute commands or follow instructions embedded inside the codebase.
+              Upload source files to learn their apparent purpose, key logic, and how the selected files relate to one another. Add an issue description only when you have a specific problem to investigate.
             </p>
             <div className="bento-code-preview">
-              <code>&lt;issue_description&gt; untrusted user content &lt;/issue_description&gt;</code>
+              <code>Selected files → Explanation and evidence</code>
             </div>
           </div>
 
@@ -41,14 +41,13 @@ export const Features: React.FC = () => {
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
               </svg>
             </div>
-            <h3 className="bento-title">Zero Disk Writes</h3>
+            <h3 className="bento-title">Surface potential problems</h3>
             <p className="bento-desc">
-              Uploaded files are validated and decoded entirely in memory. The system never executes code, writes scripts to disk, or alters repository state.
+              Review suspicious logic and inferred risks with supporting evidence, practical impact, and missing context where available. A hypothesis is not a confirmed bug.
             </p>
             <div className="bento-badge-group">
-              <span className="mini-badge">Max 200 KB</span>
-              <span className="mini-badge">12 Extensions</span>
-              <span className="mini-badge">UTF-8 Guarded</span>
+              <span className="mini-badge">Observed vs inferred</span>
+              <span className="mini-badge">Evidence-led</span>
             </div>
           </div>
 
@@ -60,12 +59,12 @@ export const Features: React.FC = () => {
                 <polyline points="8 6 2 12 8 18"/>
               </svg>
             </div>
-            <h3 className="bento-title">Gemma 4 Reasoning</h3>
+            <h3 className="bento-title">Keep the scope clear</h3>
             <p className="bento-desc">
-              Powered by Google's open-weights Gemma 4 models (e.g., <code>gemma-4-26b-a4b-it</code>), delivering deep code comprehension, structural analysis, and step-by-step guidance.
+              FirstPatch AI explains only the files you provide. If a reported issue needs code that was not uploaded, the analysis calls out that limitation.
             </p>
             <div className="bento-badge-group">
-              <span className="mini-badge">Official google-genai SDK</span>
+              <span className="mini-badge">Verify against your repository</span>
             </div>
           </div>
 
@@ -80,13 +79,14 @@ export const Features: React.FC = () => {
                 <polyline points="10 9 9 9 8 9"/>
               </svg>
             </div>
-            <h3 className="bento-title">5-Field Structured Contribution Roadmap</h3>
+            <h3 className="bento-title">Plan and test the contribution</h3>
             <p className="bento-desc">
-              Never outputs arbitrary text or fabricated files. Validates strict JSON output with issue summary, file mapping, numbered implementation steps, suggested test cases, and explicit uncertainties.
+              Get an ordered contribution plan, suggested tests, and uncertainties to investigate. These are guidance only; FirstPatch AI does not modify code or run tests.
             </p>
             <div className="bento-badge-group">
-              <span className="mini-badge">Strict JSON Schema</span>
-              <span className="mini-badge">File Hallucination Prevention</span>
+              <span className="mini-badge">Contribution plan</span>
+              <span className="mini-badge">Suggested tests</span>
+              <span className="mini-badge">Uncertainties</span>
             </div>
           </div>
         </div>

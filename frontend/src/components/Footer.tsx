@@ -1,65 +1,58 @@
 import React from 'react';
 import '../styles/Footer.css';
 
-export const Footer: React.FC = () => {
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
+interface FooterProps {
+  onNavigate: (destination: string) => void;
+}
+
+export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
+  const follow = (event: React.MouseEvent<HTMLAnchorElement>, destination: string) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onNavigate(destination);
   };
 
   return (
     <footer className="footer-root">
       <div className="footer-container">
         <div className="footer-main">
-          {/* Brand Info */}
           <div className="footer-brand-col">
-            <div className="footer-brand" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-              <div className="logo-symbol-sm">
+            <a className="footer-brand" href="/" onClick={(event) => follow(event, '/')} aria-label="FirstPatch AI home">
+              <span className="logo-symbol-sm" aria-hidden="true">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M4 17L10 11L4 5" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
                   <path d="M12 19H20" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round"/>
                 </svg>
-              </div>
-              <span className="brand-name">
-                FirstPatch <span className="brand-accent">AI</span>
               </span>
-            </div>
-            <p className="footer-tagline">
-              An intelligent assistant designed to help beginners understand open-source issues, navigate codebases, and prepare their first pull requests with confidence.
-            </p>
+              <span className="brand-name">FirstPatch <span className="brand-accent">AI</span></span>
+            </a>
+            <p className="footer-tagline">A practical starting point for understanding an open-source issue and planning a first contribution.</p>
           </div>
 
-          {/* Navigation Links */}
           <div className="footer-links-col">
-            <h4 className="footer-heading">Navigation</h4>
+            <h2 className="footer-heading">Navigate</h2>
             <ul className="footer-links-list">
-              <li><button onClick={() => scrollTo('workspace')}>Analysis Workspace</button></li>
-              <li><button onClick={() => scrollTo('illustrative-preview')}>Sample Roadmap</button></li>
-              <li><button onClick={() => scrollTo('how-it-works')}>How It Works</button></li>
-              <li><button onClick={() => scrollTo('features')}>Core Architecture</button></li>
+              <li><a href="/" onClick={(event) => follow(event, '/')}>Home</a></li>
+              <li><a href="/#how-it-works" onClick={(event) => follow(event, '/#how-it-works')}>How it works</a></li>
+              <li><a href="/#features" onClick={(event) => follow(event, '/#features')}>Capabilities</a></li>
+              <li><a href="/analyze" onClick={(event) => follow(event, '/analyze')}>Understand code</a></li>
             </ul>
           </div>
 
-          {/* Safety & Design Notes */}
           <div className="footer-links-col">
-            <h4 className="footer-heading">Architecture</h4>
+            <h2 className="footer-heading">The workflow</h2>
             <ul className="footer-links-list footer-tech-notes">
-              <li><span>Powered by Google Gemma 4</span></li>
-              <li><span>Official google-genai SDK</span></li>
-              <li><span>Zero Disk Writes & UTF-8 Safe</span></li>
-              <li><span>React + Vite Frontend Foundation</span></li>
+              <li><span>Issue summary and relevant files</span></li>
+              <li><span>Contribution plan and suggested tests</span></li>
+              <li><span>Uncertainties to verify in the repository</span></li>
+              <li><span>Uploaded source files are not executed</span></li>
             </ul>
           </div>
         </div>
 
-        {/* Bottom Bar */}
         <div className="footer-bottom">
-          <p className="footer-copy">
-            FirstPatch AI • Open-Source Contribution Onboarding Assistant
-          </p>
-          <span className="footer-stage-badge">Stage 1 Frontend Prototype</span>
+          <p className="footer-copy">FirstPatch AI · Open-source contribution guidance</p>
+          <span className="footer-stage-badge">Built for first patches</span>
         </div>
       </div>
     </footer>
