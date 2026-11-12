@@ -1,1 +1,2 @@
 # Keep directory in git
+# This file is used to ensure that the `tests` directory is tracked by Git, even if it is empty. The `.gitkeep` file serves as a placeholder to maintain the directory structure in the repository.
